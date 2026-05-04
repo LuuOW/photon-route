@@ -23,6 +23,7 @@ dependencies = [
 photonic = [
   "strawberryfields>=0.23",
   "thewalrus>=0.21",
+  "setuptools>=68",
 ]
 dev = [
   "ruff>=0.4",
