@@ -27,6 +27,11 @@ photonic = [
   # still imports at module load. Re-evaluate when SF migrates to
   # importlib.metadata (tracked upstream).
   "setuptools>=68,<81",
+  # Pin <1.14: scipy 1.14 removed the `simps` alias that thewalrus still
+  # uses. Drop this when thewalrus migrates to scipy.integrate.simpson.
+  "scipy>=1.10,<1.14",
+  # numpy 2.x is incompatible with the scipy<1.14 ABI on Python 3.12.
+  "numpy>=1.26,<2",
 ]
 dev = [
   "ruff>=0.4",
