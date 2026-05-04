@@ -23,7 +23,10 @@ dependencies = [
 photonic = [
   "strawberryfields>=0.23",
   "thewalrus>=0.21",
-  "setuptools>=68",
+  # Pin <81: setuptools 82 dropped pkg_resources, which strawberryfields
+  # still imports at module load. Re-evaluate when SF migrates to
+  # importlib.metadata (tracked upstream).
+  "setuptools>=68,<81",
 ]
 dev = [
   "ruff>=0.4",
