@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "photon-route"
+version = "0.1.0"
+description = "Continuous-variable photonic retrieval — Gaussian-state fidelity over Strawberry Fields programs."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "lkempe" }]
+keywords = ["qnlp", "cv-quantum", "photonic", "retrieval", "strawberryfields", "gaussian-states", "research"]
+
+dependencies = [
+  "numpy>=1.26",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+photonic = [
+  "strawberryfields>=0.23",
+  "thewalrus>=0.21",
+]
+dev = [
+  "ruff>=0.4",
+  "pytest>=8.0",
+]
+
+[project.scripts]
+photon-route = "photon_route.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/photon_route"]
