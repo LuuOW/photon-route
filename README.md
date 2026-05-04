@@ -1,6 +1,6 @@
 ---
 title: photon-route
-emoji: "L"
+emoji: 💡
 colorFrom: indigo
 colorTo: blue
 sdk: docker
