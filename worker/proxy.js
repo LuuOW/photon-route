@@ -15,7 +15,7 @@
 
 const HF = 'https://luuow-photon-route.hf.space';
 const PROXY = new Set(['/rank', '/version', '/docs', '/openapi.json']);
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 
 const BANNER = {
   service: 'photon-route',
@@ -143,6 +143,24 @@ const HTML = `<!doctype html>
     border-bottom:1px dotted var(--line)}
   footer a:hover{color:var(--fg);border-bottom-color:var(--cyan)}
   .empty{color:var(--muted);text-align:center;padding:32px 12px;font-size:12px}
+  /* phase-space visualization */
+  .viz{margin:14px 0 18px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .modepanel{position:relative;background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);overflow:hidden;aspect-ratio:5/4;min-height:200px}
+  .modepanel canvas{display:block;width:100%;height:100%;cursor:grab;touch-action:none}
+  .modepanel canvas:active{cursor:grabbing}
+  .modepanel .lbl{position:absolute;top:8px;left:10px;color:var(--dim);
+    font-size:10px;letter-spacing:.04em;text-transform:uppercase;pointer-events:none}
+  .modepanel .coord{position:absolute;top:8px;right:10px;color:var(--cyan);
+    font-size:10px;font-variant-numeric:tabular-nums;pointer-events:none;
+    background:rgba(6,8,15,.55);padding:2px 6px;border-radius:3px}
+  .modepanel .axes{position:absolute;bottom:6px;left:10px;color:var(--muted);
+    font-size:10px;pointer-events:none;font-style:italic}
+  .vizhint{color:var(--muted);font-size:10px;margin:-10px 0 14px;text-align:center}
+  @media (max-width:600px){
+    .viz{grid-template-columns:1fr;gap:8px}
+    .modepanel{aspect-ratio:4/3}
+  }
   @keyframes shimmer{0%{background-position:-220px 0}100%{background-position:220px 0}}
   .skeleton{height:54px;border-radius:var(--radius);
     background:linear-gradient(90deg,var(--panel) 0%,var(--panel2) 50%,var(--panel) 100%);
@@ -180,6 +198,22 @@ const HTML = `<!doctype html>
 </form>
 <p class="hint">Each word becomes a squeezing + displacement on a bosonic mode, then a beam-splitter mixes them. Ranking is closed-form Gaussian-state fidelity (Banchi-Braunstein-Pirandola).</p>
 
+<section class="viz" aria-label="Wigner-function visualization of the query Gaussian state">
+  <div class="modepanel">
+    <canvas id="wig0" width="360" height="288" aria-label="Wigner function of mode 0"></canvas>
+    <span class="lbl">mode 0</span>
+    <span class="coord" id="c0">vacuum</span>
+    <span class="axes">q · p</span>
+  </div>
+  <div class="modepanel">
+    <canvas id="wig1" width="360" height="288" aria-label="Wigner function of mode 1"></canvas>
+    <span class="lbl">mode 1</span>
+    <span class="coord" id="c1">vacuum</span>
+    <span class="axes">q · p</span>
+  </div>
+</section>
+<p class="vizhint">phase-space (q, p) → Wigner quasi-probability · drag to rotate · the same gates run on the HF Space</p>
+
 <div id="status" class="status" role="status" aria-live="polite"></div>
 <ol id="results" class="results" aria-live="polite" aria-busy="false"></ol>
 
@@ -205,6 +239,325 @@ const HTML = `<!doctype html>
   var q=$('q'), k=$('k'), results=$('results'), status=$('status');
   var healthPill=$('health'), healthText=$('health-text');
   var abort=null, debounceT=0;
+
+  // ============================================================
+  // Gaussian-state encoding (mirrors src/photon_route/encode.py)
+  // xpxp ordering: mu = [q0, p0, q1, p1]; sigma is 4x4
+  // ============================================================
+  var N_MODES = 2, MAX_SQUEEZE = 0.5, MAX_DISPLACE = 1.0;
+  var _wcache = new Map();
+
+  async function wordParams(word){
+    if(_wcache.has(word)) return _wcache.get(word);
+    var bytes;
+    try {
+      var buf = new TextEncoder().encode(word);
+      var hash = await crypto.subtle.digest('SHA-256', buf);
+      bytes = new Uint8Array(hash);
+    } catch(e){
+      // fallback: not cryptographic but stable enough for viz when subtle unavailable
+      bytes = new Uint8Array(32);
+      var h = 2166136261;
+      for(var i=0;i<word.length;i++){ h ^= word.charCodeAt(i); h = (h*16777619)>>>0; }
+      for(var j=0;j<32;j++){ bytes[j] = (h>>(j%4*8)) & 0xff; h = (h*1664525 + 1013904223)>>>0; }
+    }
+    var parts = [];
+    for(var i2=0;i2<4;i2++){
+      // 8 bytes -> BigInt -> mod 1e9 / 1e9
+      var big = 0n;
+      for(var j2=0;j2<8;j2++) big = (big << 8n) + BigInt(bytes[i2*8 + j2]);
+      parts.push(Number(big % 1000000000n) / 1e9);
+    }
+    var out = {
+      r: parts[0]*MAX_SQUEEZE,
+      phi_s: parts[1]*2*Math.PI,
+      d_mag: parts[2]*MAX_DISPLACE,
+      d_phase: parts[3]*2*Math.PI,
+    };
+    _wcache.set(word, out);
+    return out;
+  }
+
+  function eye4(){return [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}
+  function mat4(){return [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]}
+  function mm4(A,B){
+    var C=mat4();
+    for(var i=0;i<4;i++) for(var j=0;j<4;j++){
+      var s=0; for(var k=0;k<4;k++) s += A[i][k]*B[k][j]; C[i][j]=s;
+    }
+    return C;
+  }
+  function mv4(A,v){
+    var r=[0,0,0,0];
+    for(var i=0;i<4;i++){ var s=0; for(var k=0;k<4;k++) s += A[i][k]*v[k]; r[i]=s; }
+    return r;
+  }
+  function tr4(A){var T=mat4(); for(var i=0;i<4;i++) for(var j=0;j<4;j++) T[i][j]=A[j][i]; return T;}
+
+  function sgateMat(k, r, phi){
+    // S22 = R(phi/2) @ diag(e^{-r}, e^r) @ R(-phi/2)
+    var c=Math.cos(phi/2), s=Math.sin(phi/2), em=Math.exp(-r), ep=Math.exp(r);
+    var a = c*c*em + s*s*ep;
+    var b = c*s*(em - ep);
+    var d = s*s*em + c*c*ep;
+    var M = eye4();
+    var i0=2*k, i1=2*k+1;
+    M[i0][i0]=a;  M[i0][i1]=b;
+    M[i1][i0]=b;  M[i1][i1]=d;
+    return M;
+  }
+  function rotMode1(phi){
+    var c=Math.cos(phi), s=Math.sin(phi);
+    return [[1,0,0,0],[0,1,0,0],[0,0,c,-s],[0,0,s,c]];
+  }
+  function bsMat(theta){
+    var c=Math.cos(theta), s=Math.sin(theta);
+    return [[c,0,-s,0],[0,c,0,-s],[s,0,c,0],[0,s,0,c]];
+  }
+
+  async function encodeState(text){
+    var words = (text||'').toLowerCase().split(/\s+/).filter(Boolean);
+    var mu = [0,0,0,0];
+    var sigma = eye4();
+    for(var i=0;i<words.length;i++){
+      var p = await wordParams(words[i]);
+      var k = i % N_MODES;
+      var S = sgateMat(k, p.r, p.phi_s);
+      mu = mv4(S, mu);
+      sigma = mm4(mm4(S, sigma), tr4(S));
+      mu[2*k]   += p.d_mag * Math.cos(p.d_phase);
+      mu[2*k+1] += p.d_mag * Math.sin(p.d_phase);
+    }
+    if(words.length > 0 && N_MODES >= 2){
+      var theta = (words.length % 16) * Math.PI/16;
+      var phib  = ((words.length*7) % 16) * Math.PI/16;
+      var R = rotMode1(phib);
+      mu = mv4(R, mu); sigma = mm4(mm4(R, sigma), tr4(R));
+      var BS = bsMat(theta);
+      mu = mv4(BS, mu); sigma = mm4(mm4(BS, sigma), tr4(BS));
+    }
+    return {mu:mu, sigma:sigma};
+  }
+
+  function modeMarginal(state, k){
+    var i0=2*k, i1=2*k+1;
+    return {
+      mu:[state.mu[i0], state.mu[i1]],
+      sigma:[
+        [state.sigma[i0][i0], state.sigma[i0][i1]],
+        [state.sigma[i1][i0], state.sigma[i1][i1]]
+      ]
+    };
+  }
+
+  // ============================================================
+  // 2.5D Wigner-function rendering on a 2D canvas (no WebGL).
+  // For Gaussian states: W(x) = (1 / (2π√det Σ)) exp(-½ (x-μ)ᵀΣ⁻¹(x-μ))
+  // ============================================================
+  var GRID = 26;            // quads per side; 26² × 2 modes ~= 1352 quads/frame
+  var DPR  = Math.min(window.devicePixelRatio || 1, 2);
+
+  function WignerView(canvas, coordEl){
+    this.canvas = canvas;
+    this.coord  = coordEl;
+    this.ctx    = canvas.getContext('2d');
+    this.mu     = [0,0];
+    this.sigma  = [[1,0],[0,1]];
+    this.yaw    = 0.55;       // initial ~31°
+    this.pitch  = 0.85;       // tilt down
+    this.userYaw = false;
+    this.dragging = false;
+    this.lastX = 0; this.lastY = 0;
+    this.bind();
+    this.resize();
+  }
+  WignerView.prototype.setState = function(mu, sigma){
+    this.mu = mu; this.sigma = sigma;
+    if(this.coord){
+      var dq = mu[0], dp = mu[1];
+      var disp = Math.sqrt(dq*dq + dp*dp);
+      if(disp < 1e-6 && Math.abs(sigma[0][0]-1)<1e-6 && Math.abs(sigma[1][1]-1)<1e-6 && Math.abs(sigma[0][1])<1e-6){
+        this.coord.textContent = 'vacuum';
+      } else {
+        this.coord.textContent = 'q̄='+dq.toFixed(2)+' p̄='+dp.toFixed(2);
+      }
+    }
+  };
+  WignerView.prototype.resize = function(){
+    var rect = this.canvas.getBoundingClientRect();
+    this.canvas.width  = Math.max(1, Math.round(rect.width * DPR));
+    this.canvas.height = Math.max(1, Math.round(rect.height * DPR));
+  };
+  WignerView.prototype.bind = function(){
+    var self = this;
+    function down(x, y){ self.dragging = true; self.userYaw = true; self.lastX=x; self.lastY=y; }
+    function move(x, y){
+      if(!self.dragging) return;
+      var dx = x - self.lastX, dy = y - self.lastY;
+      self.lastX = x; self.lastY = y;
+      self.yaw   += dx * 0.01;
+      self.pitch += dy * 0.005;
+      self.pitch = Math.max(0.15, Math.min(1.45, self.pitch));
+    }
+    function up(){ self.dragging = false; }
+    this.canvas.addEventListener('mousedown', function(e){ down(e.clientX, e.clientY); });
+    window.addEventListener('mousemove', function(e){ move(e.clientX, e.clientY); });
+    window.addEventListener('mouseup', up);
+    this.canvas.addEventListener('touchstart', function(e){ if(e.touches[0]) down(e.touches[0].clientX, e.touches[0].clientY); }, {passive:true});
+    this.canvas.addEventListener('touchmove',  function(e){ if(e.touches[0]){ move(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault && e.preventDefault(); } }, {passive:false});
+    this.canvas.addEventListener('touchend', up);
+    this.canvas.addEventListener('dblclick', function(){
+      self.yaw = 0.55; self.pitch = 0.85; self.userYaw = false;
+    });
+  };
+  WignerView.prototype.draw = function(){
+    var ctx = this.ctx, W = this.canvas.width, H = this.canvas.height;
+    ctx.clearRect(0,0,W,H);
+
+    var mu = this.mu, sg = this.sigma;
+    var det = sg[0][0]*sg[1][1] - sg[0][1]*sg[1][0];
+    if(det < 1e-12){ return; }
+    var iv00 = sg[1][1]/det, iv01 = -sg[0][1]/det, iv10 = -sg[1][0]/det, iv11 = sg[0][0]/det;
+    var norm = 1/(2*Math.PI*Math.sqrt(det));
+
+    // auto-scale to fit ±3σ ellipse around μ
+    var sQ = Math.sqrt(Math.abs(sg[0][0])), sP = Math.sqrt(Math.abs(sg[1][1]));
+    var extent = Math.max(2.6, Math.abs(mu[0]) + 3*sQ, Math.abs(mu[1]) + 3*sP);
+    var scaleXY = (Math.min(W, H) * 0.32) / extent;
+    var scaleZ  = (Math.min(W, H) * 0.55) * Math.sqrt(det);  // visual height ~ peak amplitude
+    var ox = W*0.5, oy = H*0.62;
+
+    var cy = Math.cos(this.yaw),   sy = Math.sin(this.yaw);
+    var cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+
+    function project(q, p, w){
+      var xr = q*cy - p*sy;
+      var yr = q*sy + p*cy;
+      var sx = ox + xr * scaleXY;
+      var sy_ = oy - yr * scaleXY * cp - w * scaleZ * sp;
+      var depth = yr * sp - w * cp;  // larger = farther back
+      return [sx, sy_, depth];
+    }
+    function projectFlat(q, p){
+      var xr = q*cy - p*sy;
+      var yr = q*sy + p*cy;
+      return [ox + xr*scaleXY, oy - yr*scaleXY*cp];
+    }
+
+    // floor grid on (q, p) plane
+    ctx.strokeStyle = 'rgba(28,39,66,0.7)';
+    ctx.lineWidth = 1;
+    var gN = 6;
+    for(var gi=0; gi<=gN; gi++){
+      var t = -extent + (2*extent) * (gi/gN);
+      var aFlat = projectFlat(t, -extent);
+      var bFlat = projectFlat(t,  extent);
+      ctx.beginPath(); ctx.moveTo(aFlat[0], aFlat[1]); ctx.lineTo(bFlat[0], bFlat[1]); ctx.stroke();
+      var cFlat = projectFlat(-extent, t);
+      var dFlat = projectFlat( extent, t);
+      ctx.beginPath(); ctx.moveTo(cFlat[0], cFlat[1]); ctx.lineTo(dFlat[0], dFlat[1]); ctx.stroke();
+    }
+    // axes: q (cyan), p (indigo) at origin
+    var oFlat = projectFlat(0,0);
+    var qAxis = projectFlat(extent, 0);
+    var pAxis = projectFlat(0, extent);
+    ctx.strokeStyle = 'rgba(34,211,238,0.45)';
+    ctx.beginPath(); ctx.moveTo(oFlat[0], oFlat[1]); ctx.lineTo(qAxis[0], qAxis[1]); ctx.stroke();
+    ctx.strokeStyle = 'rgba(129,140,248,0.45)';
+    ctx.beginPath(); ctx.moveTo(oFlat[0], oFlat[1]); ctx.lineTo(pAxis[0], pAxis[1]); ctx.stroke();
+
+    // sample Wigner on grid + project
+    var N = GRID;
+    var step = (2*extent)/N;
+    var pts = new Array(N+1);
+    var wmax = 0;
+    for(var i=0;i<=N;i++){
+      pts[i] = new Array(N+1);
+      var qi = -extent + i*step;
+      for(var j=0;j<=N;j++){
+        var pj = -extent + j*step;
+        var dqv = qi - mu[0], dpv = pj - mu[1];
+        var ex = dqv*(iv00*dqv + iv01*dpv) + dpv*(iv10*dqv + iv11*dpv);
+        var w = norm * Math.exp(-0.5*ex);
+        pts[i][j] = w;
+        if(w > wmax) wmax = w;
+        var pr = project(qi, pj, w);
+        pts[i][j] = {w:w, sx:pr[0], sy:pr[1], depth:pr[2]};
+      }
+    }
+
+    // build quads + sort back-to-front
+    var quads = [];
+    for(var i2=0;i2<N;i2++){
+      for(var j2=0;j2<N;j2++){
+        var a = pts[i2][j2], b = pts[i2+1][j2], c = pts[i2+1][j2+1], d = pts[i2][j2+1];
+        var depth = (a.depth + b.depth + c.depth + d.depth) * 0.25;
+        var wAvg = (a.w + b.w + c.w + d.w) * 0.25;
+        quads.push({a:a, b:b, c:c, d:d, depth:depth, w:wAvg});
+      }
+    }
+    quads.sort(function(x, y){ return y.depth - x.depth; }); // larger depth first (farther)
+
+    // draw
+    for(var qi2=0; qi2<quads.length; qi2++){
+      var qd = quads[qi2];
+      var t2 = wmax > 1e-12 ? Math.max(0, Math.min(1, qd.w / wmax)) : 0;
+      // indigo (low) -> cyan (high)
+      var rC = Math.round(0x81*(1-t2) + 0x22*t2);
+      var gC = Math.round(0x8c*(1-t2) + 0xd3*t2);
+      var bC = Math.round(0xf8*(1-t2) + 0xee*t2);
+      var aC = (0.10 + 0.78*t2).toFixed(3);
+      ctx.fillStyle = 'rgba('+rC+','+gC+','+bC+','+aC+')';
+      ctx.strokeStyle = 'rgba('+rC+','+gC+','+bC+',0.45)';
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(qd.a.sx, qd.a.sy);
+      ctx.lineTo(qd.b.sx, qd.b.sy);
+      ctx.lineTo(qd.c.sx, qd.c.sy);
+      ctx.lineTo(qd.d.sx, qd.d.sy);
+      ctx.closePath();
+      ctx.fill();
+      if(t2 > 0.06) ctx.stroke();
+    }
+  };
+
+  var v0 = null, v1 = null, lastQuery = null, currentState = null;
+  function initViz(){
+    var c0 = document.getElementById('wig0'), c1 = document.getElementById('wig1');
+    if(!c0 || !c1) return;
+    v0 = new WignerView(c0, document.getElementById('c0'));
+    v1 = new WignerView(c1, document.getElementById('c1'));
+    var resize = function(){ v0.resize(); v1.resize(); };
+    window.addEventListener('resize', resize);
+    // vacuum initial
+    v0.setState([0,0],[[1,0],[0,1]]);
+    v1.setState([0,0],[[1,0],[0,1]]);
+    var lastT = performance.now();
+    function loop(t){
+      var dt = Math.min(0.06, (t - lastT)/1000); lastT = t;
+      if(!v0.dragging && !v1.dragging && !v0.userYaw && !v1.userYaw){
+        v0.yaw += dt * 0.18;
+        v1.yaw -= dt * 0.18;
+      }
+      v0.draw();
+      v1.draw();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  }
+  async function updateViz(text){
+    if(!v0) return;
+    if(text === lastQuery) return;
+    lastQuery = text;
+    var st = await encodeState(text);
+    if(text !== lastQuery) return;  // newer query came in
+    currentState = st;
+    var m0 = modeMarginal(st, 0), m1 = modeMarginal(st, 1);
+    v0.setState(m0.mu, m0.sigma);
+    v1.setState(m1.mu, m1.sigma);
+  }
+  // init after DOM ready (we're at end of body so DOM exists)
+  initViz();
 
   fetch('/health',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
     var ok = j && j.ok;
@@ -298,7 +651,9 @@ const HTML = `<!doctype html>
   }
 
   function schedule(){ clearTimeout(debounceT); debounceT=setTimeout(run,280); }
+  function vizSchedule(){ updateViz(q.value.trim()); }
   q.addEventListener('input',schedule);
+  q.addEventListener('input',vizSchedule);
   k.addEventListener('input',schedule);
   q.addEventListener('keydown',function(e){
     if(e.key==='Enter'){ e.preventDefault(); clearTimeout(debounceT); run(); }
