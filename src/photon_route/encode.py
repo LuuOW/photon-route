@@ -43,12 +43,17 @@ class EncodedDoc:
 
 
 def _word_params(word: str) -> tuple[float, float, float, float]:
-    """SHA-256(word) -> (r, phi, alpha_re, alpha_im) deterministically.
+    """SHA-256(word) -> (r, phi_s, d_mag, d_phase) deterministically.
 
-    r in [0, MAX_SQUEEZE], phi in [0, 2pi), alpha components in
-    [-MAX_DISPLACE, MAX_DISPLACE]. The squeezing magnitude is bounded
-    well below 1 to keep the state's photon number reasonable for the
-    Gaussian backend (which operates in vacuum-noise units).
+    r        in [0, MAX_SQUEEZE]    squeezing magnitude
+    phi_s    in [0, 2*pi)           squeezing phase
+    d_mag    in [0, MAX_DISPLACE]   displacement magnitude
+    d_phase  in [0, 2*pi)           displacement phase
+
+    Strawberry Fields' Dgate takes (magnitude, phase) on real arguments;
+    complex displacements were deprecated. Squeezing magnitudes are
+    capped well below 1 to keep photon numbers reasonable for the
+    Gaussian backend.
     """
     h = hashlib.sha256(word.encode("utf-8")).digest()
     parts: list[float] = []
@@ -56,10 +61,10 @@ def _word_params(word: str) -> tuple[float, float, float, float]:
         chunk = int.from_bytes(h[i * 8 : (i + 1) * 8], "big")
         parts.append((chunk % 10**9) / 10**9)
     r = parts[0] * MAX_SQUEEZE
-    phi = parts[1] * 2 * math.pi
-    a_re = (parts[2] - 0.5) * 2.0 * MAX_DISPLACE
-    a_im = (parts[3] - 0.5) * 2.0 * MAX_DISPLACE
-    return r, phi, a_re, a_im
+    phi_s = parts[1] * 2 * math.pi
+    d_mag = parts[2] * MAX_DISPLACE
+    d_phase = parts[3] * 2 * math.pi
+    return r, phi_s, d_mag, d_phase
 
 
 def encode_one(text: str) -> Any:
@@ -75,10 +80,10 @@ def encode_one(text: str) -> Any:
 
     with prog.context as q:
         for i, w in enumerate(words):
-            r, phi, a_re, a_im = _word_params(w)
+            r, phi_s, d_mag, d_phase = _word_params(w)
             mode = q[i % N_MODES]
-            ops.Sgate(r, phi) | mode
-            ops.Dgate(complex(a_re, a_im)) | mode
+            ops.Sgate(r, phi_s) | mode
+            ops.Dgate(d_mag, d_phase) | mode
         if N_MODES >= 2:
             theta = (len(words) % 16) * (math.pi / 16)
             phi_bs = ((len(words) * 7) % 16) * (math.pi / 16)
