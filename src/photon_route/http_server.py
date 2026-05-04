@@ -19,6 +19,7 @@ from photon_route.corpus import Document, load_fixture
 
 BACKEND: str
 _corpus_encoded: list[Any] | None = None
+_IMPORT_ERROR: str | None = None
 
 try:
     import strawberryfields  # noqa: F401
@@ -28,8 +29,10 @@ try:
     from photon_route.retrieve import rank_against
 
     BACKEND = "gaussian"
-except ImportError:
+except Exception as _e:
     BACKEND = "stub"
+    _IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+    print(f"[photon-route] CV stack failed to import → backend=stub: {_IMPORT_ERROR}", flush=True)
     encode_corpus = None  # type: ignore[assignment]
     rank_against = None  # type: ignore[assignment]
 
@@ -71,7 +74,10 @@ def root() -> dict[str, Any]:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "backend": BACKEND}
+    out: dict[str, Any] = {"ok": True, "backend": BACKEND}
+    if _IMPORT_ERROR:
+        out["import_error"] = _IMPORT_ERROR
+    return out
 
 
 @app.get("/version")
