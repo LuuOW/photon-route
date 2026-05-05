@@ -12,3 +12,8 @@ build/
 .ruff_cache/
 .mypy_cache/
 .DS_Store
+
+# Trained weights are baked at HF Space build time, never committed:
+# stochastic per-run, opaque, and large.
+weights.npz
+*.npz
