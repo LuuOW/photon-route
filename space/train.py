@@ -208,15 +208,25 @@ def encode_torch(
 # Bhattacharyya surrogate fidelity (Gaussian-Gaussian)
 # ---------------------------------------------------------------------------
 
-def bhattacharyya(
-    mu_a: Tensor, sg_a: Tensor, mu_b: Tensor, sg_b: Tensor, ridge: float = 1e-4,
+def bhattacharyya_distance(
+    mu_a: Tensor, sg_a: Tensor, mu_b: Tensor, sg_b: Tensor, ridge: float = 1e-3,
 ) -> Tensor:
-    """F_B(rho_A, rho_B) = exp(-D_B), D_B = (1/8)Δμᵀ V⁻¹ Δμ + 0.5 log(det V / sqrt(det A * det B))
-    with V = (A + B)/2. Returns scalar in (0, 1]. Always differentiable."""
+    """Bhattacharyya distance D_B between two Gaussians (means + covs).
+
+    D_B = (1/8) Δμᵀ V⁻¹ Δμ + (1/2) log(det V / sqrt(det A · det B)),
+    with V = (A + B)/2, A = Σ_a + ridge·I, B = Σ_b + ridge·I.
+    Lower = more similar; ≥ 0 for proper SPD inputs.
+    Returned clamped to [0, 50] for downstream softmax/exp stability.
+
+    Used as a contrastive *logit* (-D / temperature) — cheaper and far
+    more numerically stable than F_B = exp(-D), which underflows for
+    well-separated Gaussians and amplifies slogdet noise.
+    """
     d = sg_a.shape[0]
-    V = 0.5 * (sg_a + sg_b) + ridge * torch.eye(d, dtype=sg_a.dtype, device=sg_a.device)
-    A = sg_a + ridge * torch.eye(d, dtype=sg_a.dtype, device=sg_a.device)
-    B = sg_b + ridge * torch.eye(d, dtype=sg_a.dtype, device=sg_a.device)
+    eye = torch.eye(d, dtype=sg_a.dtype, device=sg_a.device)
+    A = sg_a + ridge * eye
+    B = sg_b + ridge * eye
+    V = 0.5 * (A + B)
     delta = mu_a - mu_b
     sol = torch.linalg.solve(V, delta)
     quad = (delta * sol).sum()
@@ -224,7 +234,7 @@ def bhattacharyya(
     log_det_A = torch.linalg.slogdet(A)[1]
     log_det_B = torch.linalg.slogdet(B)[1]
     D = 0.125 * quad + 0.5 * (log_det_V - 0.5 * (log_det_A + log_det_B))
-    return torch.exp(-D)
+    return torch.clamp(D, min=0.0, max=50.0)
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +267,13 @@ def train(args: argparse.Namespace) -> None:
     vocab = {w: i for i, w in enumerate(sorted(words))}
     print(f"[train] vocab |V| = {len(vocab)}", flush=True)
 
-    embedding = nn.Embedding(len(vocab), 4)
+    # float64 throughout — slogdet of a near-singular squeezed-state covariance
+    # in float32 emits NaN that propagates through cross_entropy. Float64 absorbs
+    # the conditioning loss from many sequential Sgate compositions.
+    embedding = nn.Embedding(len(vocab), 4, dtype=torch.float64)
     with torch.no_grad():
         for w, i in vocab.items():
-            embedding.weight[i] = torch.from_numpy(sha_init_raw(w)).to(embedding.weight.dtype)
+            embedding.weight[i] = torch.from_numpy(sha_init_raw(w))
 
     optim = torch.optim.AdamW(embedding.parameters(), lr=args.lr, weight_decay=1e-4)
 
@@ -275,26 +288,34 @@ def train(args: argparse.Namespace) -> None:
         loss_sum = torch.zeros((), dtype=torch.float64)
         loss_components = {"info_nce": 0.0, "photon": 0.0}
 
+        # Encode each abstract once per step (was 9× per query before — 54
+        # encodings/step → 26). Weights change every step so the cache is
+        # per-step only, not amortized across steps.
+        doc_states = {a: encode_torch(t, vocab, embedding) for a, t in abstracts.items()}
+
         for query, rel_set in queries:
             mu_q, sg_q = encode_torch(query, vocab, embedding)
 
             # one positive (random pick from relevant set)
             pos_id = rng.choice(sorted(rel_set))
-            mu_p, sg_p = encode_torch(abstracts[pos_id], vocab, embedding)
+            mu_p, sg_p = doc_states[pos_id]
 
             # negatives: K random non-relevant ids
             negs = rng.choice(
-                [i for i in all_ids if i not in rel_set], size=min(args.negatives, len(all_ids) - len(rel_set)), replace=False,
+                [i for i in all_ids if i not in rel_set],
+                size=min(args.negatives, len(all_ids) - len(rel_set)),
+                replace=False,
             )
-            f_pos = bhattacharyya(mu_q, sg_q, mu_p, sg_p)
-            f_negs = torch.stack([
-                bhattacharyya(mu_q, sg_q, *encode_torch(abstracts[n], vocab, embedding))
-                for n in negs
+            d_pos = bhattacharyya_distance(mu_q, sg_q, mu_p, sg_p)
+            d_negs = torch.stack([
+                bhattacharyya_distance(mu_q, sg_q, *doc_states[n]) for n in negs
             ])
-            # InfoNCE: maximize f_pos / (f_pos + sum f_negs)  -> minimize -log(...)
-            sims = torch.cat([f_pos.unsqueeze(0), f_negs]) / args.temperature
+            # Use distance directly as a (negative) logit. Smaller D → larger
+            # logit → higher probability for that class. Standard contrastive
+            # form: cross_entropy(-D / temp, target=positive).
+            logits = -torch.cat([d_pos.unsqueeze(0), d_negs]) / args.temperature
             target = torch.zeros((), dtype=torch.long)
-            ce = F.cross_entropy(sims.unsqueeze(0), target.unsqueeze(0))
+            ce = F.cross_entropy(logits.unsqueeze(0), target.unsqueeze(0))
             loss_sum = loss_sum + ce
 
             loss_components["info_nce"] += ce.item()
@@ -359,14 +380,14 @@ def train(args: argparse.Namespace) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=ROOT / "weights.npz")
-    ap.add_argument("--steps", type=int, default=300)
+    ap.add_argument("--steps", type=int, default=100)
     ap.add_argument("--lr", type=float, default=3e-2)
     ap.add_argument("--temperature", type=float, default=0.1)
     ap.add_argument("--photon-lambda", type=float, default=1e-2)
     ap.add_argument("--negatives", type=int, default=8)
     ap.add_argument("--clip", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--log-every", type=int, default=20)
+    ap.add_argument("--log-every", type=int, default=10)
     args = ap.parse_args()
     train(args)
 

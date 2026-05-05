@@ -25,7 +25,7 @@ RUN pip install --upgrade pip \
 # runs the InfoNCE + Bhattacharyya trainer, dumps weights.npz consumable
 # by the v2 numpy encoder. Falls back to SHA-init at serve time if the
 # train step fails so the container always boots.
-RUN python -m space.train --out /app/weights.npz --steps 300 \
+RUN python -m space.train --out /app/weights.npz --steps 100 \
  || (echo "[build] training failed; container will serve sha_init only" && rm -f /app/weights.npz)
 
 EXPOSE 7860
