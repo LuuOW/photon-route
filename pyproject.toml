@@ -33,6 +33,12 @@ photonic = [
   # numpy 2.x is incompatible with the scipy<1.14 ABI on Python 3.12.
   "numpy>=1.26,<2",
 ]
+training = [
+  # Heavy: only pulled inside the HF Space Docker build, NEVER on the
+  # meridian-vm (952 MB RAM). torch CPU wheel on linux-x86_64 is ~200 MB.
+  "torch>=2.4",
+  "tqdm>=4.66",
+]
 dev = [
   "ruff>=0.4",
   "pytest>=8.0",
