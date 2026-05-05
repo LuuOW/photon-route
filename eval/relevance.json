@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "description": "Topical-relevance judgements: each query has a list of arxiv IDs from corpus_ids.json that are considered relevant. Used for nDCG / Recall@k computation in scripts/run_eval.py.",
+  "queries": [
+    {
+      "query": "continuous variable photonic quantum computing",
+      "relevant_ids": ["0708.1149", "1306.5358", "1503.02315", "1808.02892"]
+    },
+    {
+      "query": "gaussian boson sampling",
+      "relevant_ids": ["1112.5760", "1604.04220", "1904.10428", "2003.12686"]
+    },
+    {
+      "query": "quantum natural language processing",
+      "relevant_ids": ["2102.04313", "2109.05176", "2210.10860", "2304.12717"]
+    },
+    {
+      "query": "variational quantum classifier",
+      "relevant_ids": ["1701.07274", "1801.05000", "2007.08709"]
+    },
+    {
+      "query": "tensor network text representation",
+      "relevant_ids": ["1402.4467", "2111.05956", "2203.04711", "2206.07585"]
+    },
+    {
+      "query": "photonic neural network optical inference",
+      "relevant_ids": ["1003.1768", "1808.02892", "1904.10428"]
+    }
+  ]
+}

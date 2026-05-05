@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "description": "arxiv IDs forming the evaluation corpus. Abstracts are fetched on demand; only IDs + content hashes live in the repo so a frozen snapshot is reproducible without storing licensed text.",
+  "ids": [
+    "0708.1149",
+    "1003.1768",
+    "1112.5760",
+    "1306.5358",
+    "1402.4467",
+    "1503.02315",
+    "1604.04220",
+    "1701.07274",
+    "1801.05000",
+    "1808.02892",
+    "1904.10428",
+    "2003.12686",
+    "2007.08709",
+    "2102.04313",
+    "2109.05176",
+    "2111.05956",
+    "2203.04711",
+    "2206.07585",
+    "2210.10860",
+    "2304.12717"
+  ]
+}
