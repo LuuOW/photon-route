@@ -12,6 +12,12 @@ Usage:
 
 from __future__ import annotations
 
+# scipy 1.17 removed `simps`; SF 0.23 still imports it. Shim before SF
+# is loaded by any v1 backend code path. Mirrors tests/conftest.py.
+import scipy.integrate as _si  # noqa: E402
+if not hasattr(_si, "simps"):
+    _si.simps = _si.simpson  # type: ignore[attr-defined]
+
 import argparse
 import json
 import math
@@ -37,7 +43,7 @@ def make_v2_encoder(weights_path: Path | None):
 
     if weights_path is None:
         return Encoder(params_fn=sha_params_v1_compat)
-    data = np.load(weights_path, allow_pickle=False)
+    data = np.load(weights_path, allow_pickle=True)  # words is dtype=object
     table = {str(w): np.asarray(v, np.float64) for w, v in zip(data["words"], data["params"])}
     unk = np.asarray(data["unk"], np.float64) if "unk" in data.files else None
     return Encoder(params_fn=dict_params_fn(table, unk=unk))
