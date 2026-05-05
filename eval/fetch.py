@@ -13,6 +13,9 @@ Network: scrapes the og:description meta tag from arxiv.org/abs/<id>
 HTML pages (CDN-cached via Google Frontend, no per-IP rate limit in
 practice). The official export.arxiv.org/api endpoint is rate-limited
 to ~1 req / 3s and easily 429s during eval runs, so it isn't used.
+A browser-like User-Agent is required: arxiv.org returns HTTP 406 to
+non-browser UAs from datacenter IPs (caught HF Space build failure
+2026-05-05).
 """
 
 from __future__ import annotations
@@ -44,10 +47,20 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
 def _fetch_one(arxiv_id: str, timeout: float = 30.0, max_retries: int = 4) -> str:
     """Fetch one abstract via abs-page scrape. Returns normalized abstract text."""
     url = ARXIV_ABS + arxiv_id
-    req = urllib.request.Request(url, headers={"User-Agent": "photon-route/eval (research)"})
+    req = urllib.request.Request(url, headers=_BROWSER_HEADERS)
     delay = 2.0
     last_err: Exception | None = None
     for attempt in range(max_retries):
