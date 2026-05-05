@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from photon_route import __version__
 from photon_route.corpus import Document, load_fixture
@@ -175,6 +176,20 @@ def health() -> dict[str, Any]:
 @app.get("/version")
 def version() -> dict[str, str]:
     return {"version": __version__, "default_backend": DEFAULT_BACKEND}
+
+
+@app.get("/weights.npz")
+def weights_download():
+    """Serve the trained weights.npz so the eval harness on the VM can
+    score `--backend v2 --weights weights.npz` without rebuilding the
+    whole training pipeline locally. Read-only, baked at build time."""
+    if not WEIGHTS_PATH.exists():
+        raise HTTPException(status_code=404, detail="no trained weights on this build")
+    return FileResponse(
+        WEIGHTS_PATH,
+        media_type="application/octet-stream",
+        filename="weights.npz",
+    )
 
 
 @app.get("/rank")

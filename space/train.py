@@ -381,8 +381,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=ROOT / "weights.npz")
     ap.add_argument("--steps", type=int, default=100)
-    ap.add_argument("--lr", type=float, default=3e-2)
-    ap.add_argument("--temperature", type=float, default=0.1)
+    ap.add_argument("--lr", type=float, default=5e-3)
+    # D-scale logits: with D in [0, 50], temp=0.1 made -D/temp logits up to
+    # -500, exploding cross_entropy + gradients. temp=5 keeps logit magnitudes
+    # in a sensible range (~0-10) so AdamW can converge instead of oscillate.
+    ap.add_argument("--temperature", type=float, default=5.0)
     ap.add_argument("--photon-lambda", type=float, default=1e-2)
     ap.add_argument("--negatives", type=int, default=8)
     ap.add_argument("--clip", type=float, default=1.0)
