@@ -19,7 +19,7 @@ const PROXY = new Set(['/rank', '/version', '/docs', '/openapi.json']);
 // payload differs per backend; the cache key already includes the
 // query string so backends are cached separately, but old (v3) entries
 // don't have the backend field — invalidate.
-const CACHE_VERSION = 'v4';
+const CACHE_VERSION = 'v5';
 
 const BANNER = {
   service: 'photon-route',
@@ -198,6 +198,168 @@ const HTML = `<!doctype html>
 </style>
 </head>
 <body>
+<!-- ============================================================
+     Shared meridian nav · self-contained (CSS + HTML + JS)
+     Drop into any page; set data-active on .m-nav to highlight.
+     Values: home | miniapp | vlab | photon | lens | docs | blog
+============================================================ -->
+<style>
+  .m-nav {
+    position: fixed; inset: 0 0 auto 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px clamp(12px, 3vw, 24px);
+    z-index: 100;
+    pointer-events: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  .m-nav > * { pointer-events: auto; }
+  .m-brand {
+    color: #e9eef7; font-weight: 600; letter-spacing: 0.04em;
+    text-decoration: none; font-size: 15px;
+  }
+  .m-brand .m-glyph { color: #ffa276; margin-right: 6px; }
+  .m-burger {
+    width: 40px; height: 40px; padding: 0;
+    background: rgba(167,139,250,0.05);
+    border: 1px solid rgba(167,139,250,0.18);
+    border-radius: 10px;
+    cursor: pointer; position: relative;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  }
+  .m-burger:hover { background: rgba(167,139,250,0.12); border-color: #a78bfa; box-shadow: 0 0 14px rgba(167,139,250,0.25); }
+  .m-burger span {
+    position: absolute; left: 11px; right: 11px; height: 2px;
+    background: #c9d4ec; border-radius: 1px;
+    transition: top 0.18s, transform 0.18s, opacity 0.18s;
+  }
+  .m-burger span:nth-child(1) { top: 13px; }
+  .m-burger span:nth-child(2) { top: 19px; }
+  .m-burger span:nth-child(3) { top: 25px; }
+  .m-burger.open { background: rgba(167,139,250,0.18); border-color: #a78bfa; }
+  .m-burger.open span:nth-child(1) { top: 19px; transform: rotate(45deg); }
+  .m-burger.open span:nth-child(2) { opacity: 0; }
+  .m-burger.open span:nth-child(3) { top: 19px; transform: rotate(-45deg); }
+
+  .m-nav-menu {
+    position: fixed; top: 64px; right: clamp(12px, 3vw, 24px);
+    width: min(330px, calc(100vw - 24px));
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 14px;
+    background: rgba(10, 13, 20, 0.96);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(167, 139, 250, 0.3);
+    border-radius: 14px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+    transform-origin: top right;
+    transform: translateY(-12px) scale(0.97);
+    opacity: 0; pointer-events: none;
+    transition: transform 0.22s cubic-bezier(0.16,1,0.3,1), opacity 0.2s ease;
+    z-index: 110;
+    max-height: calc(100vh - 80px); overflow-y: auto;
+  }
+  .m-nav-menu.open { transform: translateY(0) scale(1); opacity: 1; pointer-events: auto; }
+  .m-nav-menu a {
+    display: block; padding: 10px 14px; border-radius: 8px;
+    font-size: 14px; color: #9bb6ea; text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+  }
+  .m-nav-menu a:hover, .m-nav-menu .current { background: rgba(167,139,250,0.10); color: #fff; }
+
+  .m-nav-group { border-top: 1px solid rgba(167, 139, 250, 0.10); margin-top: 6px; padding-top: 4px; }
+  .m-nav-group:first-of-type { border-top: 0; margin-top: 4px; padding-top: 0; }
+  .m-nav-group > summary { cursor: pointer; list-style: none; user-select: none; }
+  .m-nav-group > summary::-webkit-details-marker { display: none; }
+  .m-nav-section {
+    font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: rgba(167, 139, 250, 0.75); padding: 10px 14px 6px;
+    font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .m-nav-section::after {
+    content: '+'; font-size: 14px;
+    color: rgba(167, 139, 250, 0.55);
+    transition: transform 0.18s, color 0.18s;
+  }
+  .m-nav-group[open] > summary .m-nav-section::after { transform: rotate(45deg); color: #a78bfa; }
+  .m-nav-group > summary:hover .m-nav-section { color: #fff; }
+
+  .m-nav-app {
+    background: rgba(167,139,250,0.04);
+    border: 1px solid rgba(167,139,250,0.10);
+    margin: 4px 0; line-height: 1.3;
+    padding: 10px 14px !important;
+    border-radius: 10px !important;
+  }
+  .m-nav-app:hover { background: rgba(167,139,250,0.12); border-color: rgba(167,139,250,0.32); }
+  .m-nav-app .m-name { display: block; font-size: 14px; color: #e9eef7; font-weight: 500; }
+  .m-nav-app .m-tag  { display: block; font-size: 12px; color: #9bb6ea; margin-top: 2px; }
+  .m-nav-app .m-emoji { margin-right: 6px; }
+</style>
+
+<nav class="m-nav">
+  <a href="https://ask-meridian.uk/" class="m-brand"><span class="m-glyph">◎</span>Meridian</a>
+  <button class="m-burger" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="m-navmenu">
+    <span></span><span></span><span></span>
+  </button>
+  <div id="m-navmenu" class="m-nav-menu" role="menu">
+    <a href="https://ask-meridian.uk/">Home</a>
+
+    <details class="m-nav-group" open>
+      <summary><span class="m-nav-section">Showcase</span></summary>
+      <a href="https://ask-meridian.uk/miniapp/" class="m-nav-app">
+        <span class="m-name"><span class="m-emoji">🛰️</span>Try it · Skill orbit</span>
+        <span class="m-tag">Browser miniapp · routes any task to skills</span>
+      </a>
+      <a href="https://ask-meridian.uk/miniapp/vision-lab/" class="m-nav-app">
+        <span class="m-name"><span class="m-emoji">🔭</span>Vision Lab</span>
+        <span class="m-tag">SmolVLM / Moondream in browser via WebGPU</span>
+      </a>
+      <a href="https://photon.ask-meridian.uk" class="m-nav-app current">
+        <span class="m-name"><span class="m-emoji">⚛︎</span>Photon Router</span>
+        <span class="m-tag">CV photonic retrieval · trained on HF Space</span>
+      </a>
+      <a href="https://lens.ask-meridian.uk" class="m-nav-app ">
+        <span class="m-name"><span class="m-emoji">◎</span>Lens · WebXR</span>
+        <span class="m-tag">Vision Lab in VR · controllers, raycaster, orbit</span>
+      </a>
+    </details>
+
+    <details class="m-nav-group">
+      <summary><span class="m-nav-section">Resources</span></summary>
+      <a href="https://ask-meridian.uk/#products">Products</a>
+      <a href="https://ask-meridian.uk/blog/">Blog</a>
+      <a href="https://docs.ask-meridian.uk">Docs</a>
+      <a href="https://ask-meridian.uk/#pricing">Pricing</a>
+    </details>
+
+    <details class="m-nav-group">
+      <summary><span class="m-nav-section">Source</span></summary>
+      <a href="https://github.com/LuuOW/meridian-mcp">GitHub · meridian-mcp</a>
+      <a href="https://github.com/LuuOW/lens">GitHub · lens</a>
+      <a href="https://github.com/LuuOW/photon-route">GitHub · photon-route</a>
+    </details>
+  </div>
+</nav>
+
+<script>
+  (function () {
+    const btn  = document.querySelector('.m-burger');
+    const menu = document.getElementById('m-navmenu');
+    if (!btn || !menu) return;
+    const set = (open) => {
+      menu.classList.toggle('open', open);
+      btn.classList.toggle('open', open);
+      btn.setAttribute('aria-expanded', String(open));
+    };
+    btn.addEventListener('click', e => { e.stopPropagation(); set(!menu.classList.contains('open')); });
+    document.addEventListener('click', e => {
+      if (!menu.classList.contains('open')) return;
+      if (!menu.contains(e.target) && !btn.contains(e.target)) set(false);
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') set(false); });
+    menu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => set(false)));
+  })();
+</script>
 <main>
 <header>
   <div>
