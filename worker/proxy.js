@@ -15,7 +15,11 @@
 
 const HF = 'https://luuow-photon-route.hf.space';
 const PROXY = new Set(['/rank', '/version', '/docs', '/openapi.json']);
-const CACHE_VERSION = 'v3';
+// CACHE_VERSION bump: /rank responses now include `backend` and the
+// payload differs per backend; the cache key already includes the
+// query string so backends are cached separately, but old (v3) entries
+// don't have the backend field — invalidate.
+const CACHE_VERSION = 'v4';
 
 const BANNER = {
   service: 'photon-route',
@@ -28,10 +32,11 @@ const BANNER = {
     ui:      '/         (interactive HTML)',
     api:     '/api      (this banner)',
     health:  '/health   (worker-local)',
-    rank:    '/rank?q=<query>&top_k=N   (proxied, edge-cached 24 h)',
+    rank:    '/rank?q=<query>&top_k=N&backend=v1|sha_init|trained   (proxied, edge-cached 24 h)',
     version: '/version  (proxied)',
     docs:    '/docs     (proxied — FastAPI swagger)',
   },
+  backends: ['v1 (SF)', 'sha_init (numpy)', 'trained (numpy + learned)'],
   note: 'CV photonic retrieval. Strawberry Fields Gaussian programs, thewalrus closed-form fidelity.',
 };
 
@@ -99,6 +104,19 @@ const HTML = `<!doctype html>
   .topk{display:flex;align-items:center;gap:8px;background:var(--panel);
     border:1px solid var(--line);border-radius:var(--radius);
     padding:0 12px;color:var(--dim)}
+  select#backend{background:var(--panel);color:var(--fg);border:1px solid var(--line);
+    border-radius:var(--radius);padding:8px 10px;font:inherit;cursor:pointer}
+  select#backend:focus{outline:0;border-color:var(--indigo);box-shadow:0 0 0 3px rgba(129,140,248,.18)}
+  label.cmp{display:inline-flex;align-items:center;gap:6px;color:var(--dim);
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:8px 10px;cursor:pointer;user-select:none}
+  label.cmp input{accent-color:var(--indigo);margin:0}
+  .compare-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  .compare-col{min-width:0}
+  .compare-col h3{margin:0 0 8px;font-size:12px;letter-spacing:.04em;
+    text-transform:uppercase;color:var(--dim);font-weight:500}
+  .compare-col h3 .who{color:var(--cyan)}
+  @media (max-width:760px){.compare-grid{grid-template-columns:1fr}}
   .topk input{width:54px;background:transparent;border:0;color:var(--fg);
     font:inherit;padding:10px 0;outline:none}
   .hint{color:var(--muted);font-size:11px;margin:6px 0 18px;line-height:1.6}
@@ -191,6 +209,15 @@ const HTML = `<!doctype html>
 
 <form id="f" role="search" aria-label="photon-route query">
   <input id="q" type="search" name="q" placeholder="quantum entanglement…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="query text" autofocus>
+  <select id="backend" aria-label="encoder backend" title="encoder backend">
+    <option value="trained">trained</option>
+    <option value="sha_init">sha_init</option>
+    <option value="v1">v1 (SF)</option>
+  </select>
+  <label class="cmp" title="show all backends side-by-side">
+    <input type="checkbox" id="compare" aria-label="compare all backends">
+    <span>compare</span>
+  </label>
   <label class="topk" title="top_k results">
     <span aria-hidden="true">k</span>
     <input id="k" type="number" min="1" max="20" value="5" inputmode="numeric" aria-label="number of results">
@@ -222,7 +249,7 @@ const HTML = `<!doctype html>
   <div class="body">
     <p><strong>photon-route</strong> is a research artifact exploring whether semantic retrieval can run in the continuous-variable (CV) photonic regime — the regime that real photonic hardware (Xanadu Borealis, fiber-loop reservoirs, coherent Ising machines) actually operates in.</p>
     <p>Each document is encoded as a <em>Gaussian state</em> over N bosonic modes via a <a href="https://strawberryfields.ai/" target="_blank" rel="noopener">Strawberry Fields</a> program: words contribute squeezing and displacement operations, then a beam-splitter network mixes the modes. Query and document fidelity is computed in closed form using the <a href="https://the-walrus.readthedocs.io/" target="_blank" rel="noopener">thewalrus</a> implementation of the Banchi-Braunstein-Pirandola formula.</p>
-    <p>Day-1 parameters are SHA-256-bound (deterministic, untrained). Phase 1 will replace this with a small variational parameter set fit on an arXiv quant-ph eval set, then compare against classical bge-m3 and the DV-qubit sister project <a href="https://qrouter.ask-meridian.uk" target="_blank" rel="noopener">qrouter</a>.</p>
+    <p>Three swappable encoders share the same fidelity scoring. <strong>v1</strong> uses Strawberry Fields to run an N-mode Gaussian program with SHA-256-derived parameters. <strong>sha_init</strong> is a pure-numpy port of the same gates (no SF at deploy time). <strong>trained</strong> swaps the SHA-256 lookup for a learned table fit by InfoNCE + Bhattacharyya-coefficient surrogate fidelity on a small arXiv quant-ph eval set. Toggle <em>compare</em> to see the three side by side; the DV-qubit sister project is <a href="https://qrouter.ask-meridian.uk" target="_blank" rel="noopener">qrouter</a>.</p>
     <p>Source · <a href="https://github.com/LuuOW/photon-route" target="_blank" rel="noopener">github.com/LuuOW/photon-route</a></p>
   </div>
 </details>
@@ -559,10 +586,22 @@ const HTML = `<!doctype html>
   // init after DOM ready (we're at end of body so DOM exists)
   initViz();
 
+  var backendSel = document.getElementById('backend');
+  var compareBox = document.getElementById('compare');
   fetch('/health',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
-    var ok = j && j.ok;
+    var ok = j && j.ok && j.upstream_ok;
     healthPill.classList.add(ok?'ok':'err');
-    healthText.textContent = (j && j.backend) ? j.backend : (ok?'ok':'err');
+    var backends = (j && j.backends_available) || [];
+    healthText.textContent = ok ? (j.default_backend || 'ok') : 'offline';
+    // hide options for backends that aren't actually live upstream
+    Array.prototype.forEach.call(backendSel.options, function(opt){
+      opt.disabled = backends.length>0 && backends.indexOf(opt.value) < 0;
+      if (opt.disabled) opt.text = opt.value + ' (n/a)';
+    });
+    if (j && j.default_backend && !backendSel.querySelector('option[value="'+j.default_backend+'"]:checked')){
+      var match = backendSel.querySelector('option[value="'+j.default_backend+'"]');
+      if (match) backendSel.value = j.default_backend;
+    }
   }).catch(function(){
     healthPill.classList.add('err');
     healthText.textContent='offline';
@@ -585,8 +624,8 @@ const HTML = `<!doctype html>
     return bits.join(' · ');
   }
 
-  function render(items){
-    if(!items.length){ results.innerHTML='<li class="empty">no results</li>'; return; }
+  function renderItems(items){
+    if(!items.length) return '<li class="empty">no results</li>';
     var html='';
     for(var i=0;i<items.length;i++){
       var r=items[i];
@@ -604,7 +643,27 @@ const HTML = `<!doctype html>
         '</div>'+
       '</li>';
     }
-    results.innerHTML=html;
+    return html;
+  }
+
+  function render(items){
+    results.classList.remove('compare-grid');
+    results.innerHTML = renderItems(items);
+  }
+
+  function renderCompare(columns){
+    results.classList.add('compare-grid');
+    var html = '';
+    for(var i=0;i<columns.length;i++){
+      var c = columns[i];
+      html += '<div class="compare-col">'+
+        '<h3><span class="who">'+escapeHtml(c.backend)+'</span>'+
+        (c.error?' · <span style="color:var(--magenta)">'+escapeHtml(c.error)+'</span>':'')+
+        '</h3>'+
+        '<ol class="results">'+(c.items?renderItems(c.items):'<li class="empty">—</li>')+'</ol>'+
+      '</div>';
+    }
+    results.innerHTML = html;
   }
 
   function skeletons(n){
@@ -612,6 +671,15 @@ const HTML = `<!doctype html>
     var s='';
     for(var i=0;i<n;i++) s+='<li class="skeleton" aria-hidden="true"></li>';
     results.innerHTML=s;
+  }
+
+  async function fetchRank(text, topk, backend, sig){
+    var url='/rank?q='+encodeURIComponent(text)+'&top_k='+topk+'&backend='+encodeURIComponent(backend);
+    var r=await fetch(url,{signal:sig});
+    if(!r.ok) throw new Error('http '+r.status);
+    var j=await r.json();
+    return {backend:j.backend||backend, items:j.results||[],
+            cache:r.headers.get('x-photon-route-cache')||''};
   }
 
   async function run(){
@@ -623,23 +691,34 @@ const HTML = `<!doctype html>
       return;
     }
     var topk=Math.max(1,Math.min(20,parseInt(k.value,10)||5));
+    var compare=compareBox.checked;
     if(abort) abort.abort();
     abort=new AbortController();
     status.classList.remove('err');
-    status.textContent='ranking…';
+    status.textContent=compare?'ranking 3 backends…':'ranking…';
     results.setAttribute('aria-busy','true');
-    skeletons(topk);
+    if(!compare) skeletons(topk);
     var t0=performance.now();
     try{
-      var url='/rank?q='+encodeURIComponent(text)+'&top_k='+topk;
-      var r=await fetch(url,{signal:abort.signal});
-      if(!r.ok) throw new Error('http '+r.status);
-      var j=await r.json();
+      if(!compare){
+        var j = await fetchRank(text, topk, backendSel.value, abort.signal);
+        var ms=(performance.now()-t0).toFixed(0);
+        status.textContent = j.items.length+' result'+(j.items.length===1?'':'s')+
+          ' · '+ms+' ms'+(j.cache?' · cache '+j.cache:'')+' · backend '+j.backend;
+        render(j.items);
+        return;
+      }
+      var live = Array.prototype.filter.call(backendSel.options, function(o){return !o.disabled;})
+                                       .map(function(o){return o.value;});
+      if(!live.length) live = ['v1','sha_init','trained'];
+      var fetched = await Promise.all(live.map(function(b){
+        return fetchRank(text, topk, b, abort.signal).catch(function(e){
+          return {backend:b, items:null, error:(e&&e.message)||String(e)};
+        });
+      }));
       var ms=(performance.now()-t0).toFixed(0);
-      var cache=r.headers.get('x-photon-route-cache')||'';
-      var n=(j.results||[]).length;
-      status.textContent = n+' result'+(n===1?'':'s')+' · '+ms+' ms'+(cache?' · cache '+cache:'')+' · backend '+(j.backend||'?');
-      render(j.results||[]);
+      status.textContent = 'compared '+fetched.length+' backends · '+ms+' ms';
+      renderCompare(fetched);
     }catch(e){
       if(e && e.name==='AbortError') return;
       results.innerHTML='';
@@ -655,6 +734,8 @@ const HTML = `<!doctype html>
   q.addEventListener('input',schedule);
   q.addEventListener('input',vizSchedule);
   k.addEventListener('input',schedule);
+  backendSel.addEventListener('change',function(){ clearTimeout(debounceT); run(); });
+  compareBox.addEventListener('change',function(){ clearTimeout(debounceT); run(); });
   q.addEventListener('keydown',function(e){
     if(e.key==='Enter'){ e.preventDefault(); clearTimeout(debounceT); run(); }
   });
@@ -693,7 +774,22 @@ async function handle(req) {
   }
 
   if (path === '/health') {
-    return jsonResp({ ok: true, proxy: 'cloudflare-worker', backend: 'gaussian' });
+    // Merge upstream /health so the UI knows which backends are live.
+    let upstream = null;
+    try {
+      const r = await fetch(HF + '/health', { cf: { cacheTtl: 30 } });
+      if (r.ok) upstream = await r.json();
+    } catch (_) {}
+    return jsonResp({
+      ok: true,
+      proxy: 'cloudflare-worker',
+      upstream_ok: upstream ? !!upstream.ok : false,
+      backends_available: upstream && upstream.backends_available
+        ? upstream.backends_available : ['stub'],
+      default_backend: upstream && upstream.default_backend
+        ? upstream.default_backend : 'stub',
+      weights_loaded: upstream ? !!upstream.weights_loaded : false,
+    });
   }
 
   if (PROXY.has(path) && (req.method === 'GET' || req.method === 'HEAD')) {
