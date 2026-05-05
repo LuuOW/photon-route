@@ -1,57 +1,4 @@
-// photon-route Cloudflare Worker
-// Routes photon.ask-meridian.uk → HF Space (luuow-photon-route),
-// edge-caches /rank, and serves an inline interactive UI at /.
-//
-// Endpoints (worker-local):
-//   /         interactive HTML page
-//   /health   liveness JSON
-//   /api      service banner JSON
-// Endpoints (proxied to HF Space):
-//   /rank?q=&top_k=   edge-cached 24 h
-//   /version /docs /openapi.json
-//
-// Cache key includes CACHE_VERSION; bump to invalidate after UI changes
-// or fixture updates upstream.
-
-const HF = 'https://luuow-photon-route.hf.space';
-const PROXY = new Set(['/rank', '/version', '/docs', '/openapi.json']);
-// CACHE_VERSION bump: /rank responses now include `backend` and the
-// payload differs per backend; the cache key already includes the
-// query string so backends are cached separately, but old (v3) entries
-// don't have the backend field — invalidate.
-const CACHE_VERSION = 'v5';
-
-const BANNER = {
-  service: 'photon-route',
-  proxy: 'cloudflare-worker',
-  backend: 'huggingface-space',
-  upstream: HF,
-  repo: 'https://github.com/LuuOW/photon-route',
-  sister: 'https://qrouter.ask-meridian.uk (DV / qubit-gate sister project)',
-  endpoints: {
-    ui:      '/         (interactive HTML)',
-    api:     '/api      (this banner)',
-    health:  '/health   (worker-local)',
-    rank:    '/rank?q=<query>&top_k=N&backend=v1|sha_init|trained   (proxied, edge-cached 24 h)',
-    version: '/version  (proxied)',
-    docs:    '/docs     (proxied — FastAPI swagger)',
-  },
-  backends: ['v1 (SF)', 'sha_init (numpy)', 'trained (numpy + learned)'],
-  note: 'CV photonic retrieval. Strawberry Fields Gaussian programs, thewalrus closed-form fidelity.',
-};
-
-const CSP = [
-  "default-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "script-src 'self' 'unsafe-inline'",
-  "connect-src 'self'",
-  "img-src 'self' data:",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join('; ');
-
-const HTML = `<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -161,7 +108,6 @@ const HTML = `<!doctype html>
     border-bottom:1px dotted var(--line)}
   footer a:hover{color:var(--fg);border-bottom-color:var(--cyan)}
   .empty{color:var(--muted);text-align:center;padding:32px 12px;font-size:12px}
-  /* phase-space visualization */
   .viz{margin:14px 0 18px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .modepanel{position:relative;background:var(--panel);border:1px solid var(--line);
     border-radius:var(--radius);overflow:hidden;aspect-ratio:5/4;min-height:200px}
@@ -198,40 +144,25 @@ const HTML = `<!doctype html>
 </style>
 </head>
 <body>
-<!-- ============================================================
-     Shared meridian nav · self-contained (CSS + HTML + JS)
-     Drop into any page; set data-active on .m-nav to highlight.
-     Values: home | miniapp | vlab | photon | lens | docs | blog
-============================================================ -->
 <style>
-  .m-nav {
-    position: fixed; inset: 0 0 auto 0;
+  .m-nav { position: fixed; inset: 0 0 auto 0;
     display: flex; align-items: center; justify-content: space-between;
     padding: 14px clamp(12px, 3vw, 24px);
-    z-index: 100;
-    pointer-events: none;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  }
+    z-index: 100; pointer-events: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
   .m-nav > * { pointer-events: auto; }
-  .m-brand {
-    color: #e9eef7; font-weight: 600; letter-spacing: 0.04em;
-    text-decoration: none; font-size: 15px;
-  }
+  .m-brand { color: #e9eef7; font-weight: 600; letter-spacing: 0.04em;
+    text-decoration: none; font-size: 15px; }
   .m-brand .m-glyph { color: #ffa276; margin-right: 6px; }
-  .m-burger {
-    width: 40px; height: 40px; padding: 0;
+  .m-burger { width: 40px; height: 40px; padding: 0;
     background: rgba(167,139,250,0.05);
     border: 1px solid rgba(167,139,250,0.18);
-    border-radius: 10px;
-    cursor: pointer; position: relative;
-    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
-  }
+    border-radius: 10px; cursor: pointer; position: relative;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s; }
   .m-burger:hover { background: rgba(167,139,250,0.12); border-color: #a78bfa; box-shadow: 0 0 14px rgba(167,139,250,0.25); }
-  .m-burger span {
-    position: absolute; left: 11px; right: 11px; height: 2px;
+  .m-burger span { position: absolute; left: 11px; right: 11px; height: 2px;
     background: #c9d4ec; border-radius: 1px;
-    transition: top 0.18s, transform 0.18s, opacity 0.18s;
-  }
+    transition: top 0.18s, transform 0.18s, opacity 0.18s; }
   .m-burger span:nth-child(1) { top: 13px; }
   .m-burger span:nth-child(2) { top: 19px; }
   .m-burger span:nth-child(3) { top: 25px; }
@@ -239,57 +170,36 @@ const HTML = `<!doctype html>
   .m-burger.open span:nth-child(1) { top: 19px; transform: rotate(45deg); }
   .m-burger.open span:nth-child(2) { opacity: 0; }
   .m-burger.open span:nth-child(3) { top: 19px; transform: rotate(-45deg); }
-
-  .m-nav-menu {
-    position: fixed; top: 64px; right: clamp(12px, 3vw, 24px);
+  .m-nav-menu { position: fixed; top: 64px; right: clamp(12px, 3vw, 24px);
     width: min(330px, calc(100vw - 24px));
-    display: flex; flex-direction: column; gap: 2px;
-    padding: 14px;
-    background: rgba(10, 13, 20, 0.96);
-    backdrop-filter: blur(16px);
-    border: 1px solid rgba(167, 139, 250, 0.3);
-    border-radius: 14px;
-    box-shadow: 0 20px 50px rgba(0,0,0,0.5);
-    transform-origin: top right;
-    transform: translateY(-12px) scale(0.97);
-    opacity: 0; pointer-events: none;
+    display: flex; flex-direction: column; gap: 2px; padding: 14px;
+    background: rgba(10, 13, 20, 0.96); backdrop-filter: blur(16px);
+    border: 1px solid rgba(167, 139, 250, 0.3); border-radius: 14px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5); transform-origin: top right;
+    transform: translateY(-12px) scale(0.97); opacity: 0; pointer-events: none;
     transition: transform 0.22s cubic-bezier(0.16,1,0.3,1), opacity 0.2s ease;
-    z-index: 110;
-    max-height: calc(100vh - 80px); overflow-y: auto;
-  }
+    z-index: 110; max-height: calc(100vh - 80px); overflow-y: auto; }
   .m-nav-menu.open { transform: translateY(0) scale(1); opacity: 1; pointer-events: auto; }
-  .m-nav-menu a {
-    display: block; padding: 10px 14px; border-radius: 8px;
+  .m-nav-menu a { display: block; padding: 10px 14px; border-radius: 8px;
     font-size: 14px; color: #9bb6ea; text-decoration: none;
-    transition: background 0.15s, color 0.15s;
-  }
+    transition: background 0.15s, color 0.15s; }
   .m-nav-menu a:hover, .m-nav-menu .current { background: rgba(167,139,250,0.10); color: #fff; }
-
   .m-nav-group { border-top: 1px solid rgba(167, 139, 250, 0.10); margin-top: 6px; padding-top: 4px; }
   .m-nav-group:first-of-type { border-top: 0; margin-top: 4px; padding-top: 0; }
   .m-nav-group > summary { cursor: pointer; list-style: none; user-select: none; }
   .m-nav-group > summary::-webkit-details-marker { display: none; }
-  .m-nav-section {
-    font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
-    color: rgba(167, 139, 250, 0.75); padding: 10px 14px 6px;
-    font-weight: 600;
-    display: flex; align-items: center; justify-content: space-between;
-  }
-  .m-nav-section::after {
-    content: '+'; font-size: 14px;
+  .m-nav-section { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: rgba(167, 139, 250, 0.75); padding: 10px 14px 6px; font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between; }
+  .m-nav-section::after { content: '+'; font-size: 14px;
     color: rgba(167, 139, 250, 0.55);
-    transition: transform 0.18s, color 0.18s;
-  }
+    transition: transform 0.18s, color 0.18s; }
   .m-nav-group[open] > summary .m-nav-section::after { transform: rotate(45deg); color: #a78bfa; }
   .m-nav-group > summary:hover .m-nav-section { color: #fff; }
-
-  .m-nav-app {
-    background: rgba(167,139,250,0.04);
+  .m-nav-app { background: rgba(167,139,250,0.04);
     border: 1px solid rgba(167,139,250,0.10);
     margin: 4px 0; line-height: 1.3;
-    padding: 10px 14px !important;
-    border-radius: 10px !important;
-  }
+    padding: 10px 14px !important; border-radius: 10px !important; }
   .m-nav-app:hover { background: rgba(167,139,250,0.12); border-color: rgba(167,139,250,0.32); }
   .m-nav-app .m-name { display: block; font-size: 14px; color: #e9eef7; font-weight: 500; }
   .m-nav-app .m-tag  { display: block; font-size: 12px; color: #9bb6ea; margin-top: 2px; }
@@ -297,41 +207,31 @@ const HTML = `<!doctype html>
 </style>
 
 <nav class="m-nav">
-  <a href="https://ask-meridian.uk/" class="m-brand"><span class="m-glyph">◎</span>Meridian</a>
+  <a href="https://luuow.github.io/meridian-mcp/" class="m-brand"><span class="m-glyph">◎</span>Meridian</a>
   <button class="m-burger" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="m-navmenu">
     <span></span><span></span><span></span>
   </button>
   <div id="m-navmenu" class="m-nav-menu" role="menu">
-    <a href="https://ask-meridian.uk/">Home</a>
-
+    <a href="https://luuow.github.io/meridian-mcp/">Home</a>
     <details class="m-nav-group" open>
       <summary><span class="m-nav-section">Showcase</span></summary>
-      <a href="https://ask-meridian.uk/miniapp/" class="m-nav-app">
+      <a href="https://luuow.github.io/meridian-mcp/miniapp/" class="m-nav-app">
         <span class="m-name"><span class="m-emoji">🛰️</span>Try it · Skill orbit</span>
-        <span class="m-tag">Browser miniapp · routes any task to skills</span>
+        <span class="m-tag">Browser miniapp</span>
       </a>
-      <a href="https://ask-meridian.uk/miniapp/vision-lab/" class="m-nav-app">
+      <a href="https://luuow.github.io/meridian-mcp/miniapp/vision-lab/" class="m-nav-app">
         <span class="m-name"><span class="m-emoji">🔭</span>Vision Lab</span>
         <span class="m-tag">SmolVLM / Moondream in browser via WebGPU</span>
       </a>
-      <a href="https://photon.ask-meridian.uk" class="m-nav-app current">
+      <a href="https://luuow.github.io/photon-route/" class="m-nav-app current">
         <span class="m-name"><span class="m-emoji">⚛︎</span>Photon Router</span>
         <span class="m-tag">CV photonic retrieval · trained on HF Space</span>
       </a>
-      <a href="https://lens.ask-meridian.uk" class="m-nav-app ">
+      <a href="https://luuow.github.io/lens/" class="m-nav-app ">
         <span class="m-name"><span class="m-emoji">◎</span>Lens · WebXR</span>
         <span class="m-tag">Vision Lab in VR · controllers, raycaster, orbit</span>
       </a>
     </details>
-
-    <details class="m-nav-group">
-      <summary><span class="m-nav-section">Resources</span></summary>
-      <a href="https://ask-meridian.uk/#products">Products</a>
-      <a href="https://ask-meridian.uk/blog/">Blog</a>
-      <a href="https://docs.ask-meridian.uk">Docs</a>
-      <a href="https://ask-meridian.uk/#pricing">Pricing</a>
-    </details>
-
     <details class="m-nav-group">
       <summary><span class="m-nav-section">Source</span></summary>
       <a href="https://github.com/LuuOW/meridian-mcp">GitHub · meridian-mcp</a>
@@ -411,28 +311,29 @@ const HTML = `<!doctype html>
   <div class="body">
     <p><strong>photon-route</strong> is a research artifact exploring whether semantic retrieval can run in the continuous-variable (CV) photonic regime — the regime that real photonic hardware (Xanadu Borealis, fiber-loop reservoirs, coherent Ising machines) actually operates in.</p>
     <p>Each document is encoded as a <em>Gaussian state</em> over N bosonic modes via a <a href="https://strawberryfields.ai/" target="_blank" rel="noopener">Strawberry Fields</a> program: words contribute squeezing and displacement operations, then a beam-splitter network mixes the modes. Query and document fidelity is computed in closed form using the <a href="https://the-walrus.readthedocs.io/" target="_blank" rel="noopener">thewalrus</a> implementation of the Banchi-Braunstein-Pirandola formula.</p>
-    <p>Three swappable encoders share the same fidelity scoring. <strong>v1</strong> uses Strawberry Fields to run an N-mode Gaussian program with SHA-256-derived parameters. <strong>sha_init</strong> is a pure-numpy port of the same gates (no SF at deploy time). <strong>trained</strong> swaps the SHA-256 lookup for a learned table fit by InfoNCE + Bhattacharyya-coefficient surrogate fidelity on a small arXiv quant-ph eval set. Toggle <em>compare</em> to see the three side by side; the DV-qubit sister project is <a href="https://qrouter.ask-meridian.uk" target="_blank" rel="noopener">qrouter</a>.</p>
+    <p>Three swappable encoders share the same fidelity scoring. <strong>v1</strong> uses Strawberry Fields to run an N-mode Gaussian program with SHA-256-derived parameters. <strong>sha_init</strong> is a pure-numpy port of the same gates (no SF at deploy time). <strong>trained</strong> swaps the SHA-256 lookup for a learned table fit by InfoNCE + Bhattacharyya-coefficient surrogate fidelity on a small arXiv quant-ph eval set. Toggle <em>compare</em> to see the three side by side.</p>
     <p>Source · <a href="https://github.com/LuuOW/photon-route" target="_blank" rel="noopener">github.com/LuuOW/photon-route</a></p>
   </div>
 </details>
 
 <footer>
-  <span>CV photonic · gaussian backend · edge-cached at the Cloudflare boundary</span>
-  <span><a href="https://qrouter.ask-meridian.uk" rel="noopener">qrouter (DV)</a> · <a href="/docs">/docs</a> · <a href="/api">json</a></span>
+  <span>CV photonic · gaussian backend · UI on GitHub Pages, retrieval on HF Space</span>
+  <span><a href="https://luuow-photon-route.hf.space/docs" rel="noopener">/docs</a> · <a href="https://luuow-photon-route.hf.space/health" rel="noopener">/health</a></span>
 </footer>
 </main>
 
 <script>
 (function(){
+  // Backend lives on Hugging Face Spaces. CORS is wide-open on the FastAPI app
+  // so the browser hits this directly. Override with a ?api=https://… query
+  // string for local Space testing.
+  var SPACE = (new URL(location.href)).searchParams.get('api') || 'https://luuow-photon-route.hf.space';
+
   function $(id){return document.getElementById(id)}
   var q=$('q'), k=$('k'), results=$('results'), status=$('status');
   var healthPill=$('health'), healthText=$('health-text');
   var abort=null, debounceT=0;
 
-  // ============================================================
-  // Gaussian-state encoding (mirrors src/photon_route/encode.py)
-  // xpxp ordering: mu = [q0, p0, q1, p1]; sigma is 4x4
-  // ============================================================
   var N_MODES = 2, MAX_SQUEEZE = 0.5, MAX_DISPLACE = 1.0;
   var _wcache = new Map();
 
@@ -444,7 +345,6 @@ const HTML = `<!doctype html>
       var hash = await crypto.subtle.digest('SHA-256', buf);
       bytes = new Uint8Array(hash);
     } catch(e){
-      // fallback: not cryptographic but stable enough for viz when subtle unavailable
       bytes = new Uint8Array(32);
       var h = 2166136261;
       for(var i=0;i<word.length;i++){ h ^= word.charCodeAt(i); h = (h*16777619)>>>0; }
@@ -452,7 +352,6 @@ const HTML = `<!doctype html>
     }
     var parts = [];
     for(var i2=0;i2<4;i2++){
-      // 8 bytes -> BigInt -> mod 1e9 / 1e9
       var big = 0n;
       for(var j2=0;j2<8;j2++) big = (big << 8n) + BigInt(bytes[i2*8 + j2]);
       parts.push(Number(big % 1000000000n) / 1e9);
@@ -484,7 +383,6 @@ const HTML = `<!doctype html>
   function tr4(A){var T=mat4(); for(var i=0;i<4;i++) for(var j=0;j<4;j++) T[i][j]=A[j][i]; return T;}
 
   function sgateMat(k, r, phi){
-    // S22 = R(phi/2) @ diag(e^{-r}, e^r) @ R(-phi/2)
     var c=Math.cos(phi/2), s=Math.sin(phi/2), em=Math.exp(-r), ep=Math.exp(r);
     var a = c*c*em + s*s*ep;
     var b = c*s*(em - ep);
@@ -539,11 +437,7 @@ const HTML = `<!doctype html>
     };
   }
 
-  // ============================================================
-  // 2.5D Wigner-function rendering on a 2D canvas (no WebGL).
-  // For Gaussian states: W(x) = (1 / (2π√det Σ)) exp(-½ (x-μ)ᵀΣ⁻¹(x-μ))
-  // ============================================================
-  var GRID = 26;            // quads per side; 26² × 2 modes ~= 1352 quads/frame
+  var GRID = 26;
   var DPR  = Math.min(window.devicePixelRatio || 1, 2);
 
   function WignerView(canvas, coordEl){
@@ -552,8 +446,8 @@ const HTML = `<!doctype html>
     this.ctx    = canvas.getContext('2d');
     this.mu     = [0,0];
     this.sigma  = [[1,0],[0,1]];
-    this.yaw    = 0.55;       // initial ~31°
-    this.pitch  = 0.85;       // tilt down
+    this.yaw    = 0.55;
+    this.pitch  = 0.85;
     this.userYaw = false;
     this.dragging = false;
     this.lastX = 0; this.lastY = 0;
@@ -602,29 +496,24 @@ const HTML = `<!doctype html>
   WignerView.prototype.draw = function(){
     var ctx = this.ctx, W = this.canvas.width, H = this.canvas.height;
     ctx.clearRect(0,0,W,H);
-
     var mu = this.mu, sg = this.sigma;
     var det = sg[0][0]*sg[1][1] - sg[0][1]*sg[1][0];
     if(det < 1e-12){ return; }
     var iv00 = sg[1][1]/det, iv01 = -sg[0][1]/det, iv10 = -sg[1][0]/det, iv11 = sg[0][0]/det;
     var norm = 1/(2*Math.PI*Math.sqrt(det));
-
-    // auto-scale to fit ±3σ ellipse around μ
     var sQ = Math.sqrt(Math.abs(sg[0][0])), sP = Math.sqrt(Math.abs(sg[1][1]));
     var extent = Math.max(2.6, Math.abs(mu[0]) + 3*sQ, Math.abs(mu[1]) + 3*sP);
     var scaleXY = (Math.min(W, H) * 0.32) / extent;
-    var scaleZ  = (Math.min(W, H) * 0.55) * Math.sqrt(det);  // visual height ~ peak amplitude
+    var scaleZ  = (Math.min(W, H) * 0.55) * Math.sqrt(det);
     var ox = W*0.5, oy = H*0.62;
-
     var cy = Math.cos(this.yaw),   sy = Math.sin(this.yaw);
     var cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
-
     function project(q, p, w){
       var xr = q*cy - p*sy;
       var yr = q*sy + p*cy;
       var sx = ox + xr * scaleXY;
       var sy_ = oy - yr * scaleXY * cp - w * scaleZ * sp;
-      var depth = yr * sp - w * cp;  // larger = farther back
+      var depth = yr * sp - w * cp;
       return [sx, sy_, depth];
     }
     function projectFlat(q, p){
@@ -632,8 +521,6 @@ const HTML = `<!doctype html>
       var yr = q*sy + p*cy;
       return [ox + xr*scaleXY, oy - yr*scaleXY*cp];
     }
-
-    // floor grid on (q, p) plane
     ctx.strokeStyle = 'rgba(28,39,66,0.7)';
     ctx.lineWidth = 1;
     var gN = 6;
@@ -646,7 +533,6 @@ const HTML = `<!doctype html>
       var dFlat = projectFlat( extent, t);
       ctx.beginPath(); ctx.moveTo(cFlat[0], cFlat[1]); ctx.lineTo(dFlat[0], dFlat[1]); ctx.stroke();
     }
-    // axes: q (cyan), p (indigo) at origin
     var oFlat = projectFlat(0,0);
     var qAxis = projectFlat(extent, 0);
     var pAxis = projectFlat(0, extent);
@@ -654,8 +540,6 @@ const HTML = `<!doctype html>
     ctx.beginPath(); ctx.moveTo(oFlat[0], oFlat[1]); ctx.lineTo(qAxis[0], qAxis[1]); ctx.stroke();
     ctx.strokeStyle = 'rgba(129,140,248,0.45)';
     ctx.beginPath(); ctx.moveTo(oFlat[0], oFlat[1]); ctx.lineTo(pAxis[0], pAxis[1]); ctx.stroke();
-
-    // sample Wigner on grid + project
     var N = GRID;
     var step = (2*extent)/N;
     var pts = new Array(N+1);
@@ -674,8 +558,6 @@ const HTML = `<!doctype html>
         pts[i][j] = {w:w, sx:pr[0], sy:pr[1], depth:pr[2]};
       }
     }
-
-    // build quads + sort back-to-front
     var quads = [];
     for(var i2=0;i2<N;i2++){
       for(var j2=0;j2<N;j2++){
@@ -685,13 +567,10 @@ const HTML = `<!doctype html>
         quads.push({a:a, b:b, c:c, d:d, depth:depth, w:wAvg});
       }
     }
-    quads.sort(function(x, y){ return y.depth - x.depth; }); // larger depth first (farther)
-
-    // draw
+    quads.sort(function(x, y){ return y.depth - x.depth; });
     for(var qi2=0; qi2<quads.length; qi2++){
       var qd = quads[qi2];
       var t2 = wmax > 1e-12 ? Math.max(0, Math.min(1, qd.w / wmax)) : 0;
-      // indigo (low) -> cyan (high)
       var rC = Math.round(0x81*(1-t2) + 0x22*t2);
       var gC = Math.round(0x8c*(1-t2) + 0xd3*t2);
       var bC = Math.round(0xf8*(1-t2) + 0xee*t2);
@@ -718,7 +597,6 @@ const HTML = `<!doctype html>
     v1 = new WignerView(c1, document.getElementById('c1'));
     var resize = function(){ v0.resize(); v1.resize(); };
     window.addEventListener('resize', resize);
-    // vacuum initial
     v0.setState([0,0],[[1,0],[0,1]]);
     v1.setState([0,0],[[1,0],[0,1]]);
     var lastT = performance.now();
@@ -739,23 +617,21 @@ const HTML = `<!doctype html>
     if(text === lastQuery) return;
     lastQuery = text;
     var st = await encodeState(text);
-    if(text !== lastQuery) return;  // newer query came in
+    if(text !== lastQuery) return;
     currentState = st;
     var m0 = modeMarginal(st, 0), m1 = modeMarginal(st, 1);
     v0.setState(m0.mu, m0.sigma);
     v1.setState(m1.mu, m1.sigma);
   }
-  // init after DOM ready (we're at end of body so DOM exists)
   initViz();
 
   var backendSel = document.getElementById('backend');
   var compareBox = document.getElementById('compare');
-  fetch('/health',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
-    var ok = j && j.ok && j.upstream_ok;
+  fetch(SPACE+'/health',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
+    var ok = j && j.ok;
     healthPill.classList.add(ok?'ok':'err');
     var backends = (j && j.backends_available) || [];
     healthText.textContent = ok ? (j.default_backend || 'ok') : 'offline';
-    // hide options for backends that aren't actually live upstream
     Array.prototype.forEach.call(backendSel.options, function(opt){
       opt.disabled = backends.length>0 && backends.indexOf(opt.value) < 0;
       if (opt.disabled) opt.text = opt.value + ' (n/a)';
@@ -836,12 +712,11 @@ const HTML = `<!doctype html>
   }
 
   async function fetchRank(text, topk, backend, sig){
-    var url='/rank?q='+encodeURIComponent(text)+'&top_k='+topk+'&backend='+encodeURIComponent(backend);
+    var url=SPACE+'/rank?q='+encodeURIComponent(text)+'&top_k='+topk+'&backend='+encodeURIComponent(backend);
     var r=await fetch(url,{signal:sig});
     if(!r.ok) throw new Error('http '+r.status);
     var j=await r.json();
-    return {backend:j.backend||backend, items:j.results||[],
-            cache:r.headers.get('x-photon-route-cache')||''};
+    return {backend:j.backend||backend, items:j.results||[], cache:''};
   }
 
   async function run(){
@@ -866,7 +741,7 @@ const HTML = `<!doctype html>
         var j = await fetchRank(text, topk, backendSel.value, abort.signal);
         var ms=(performance.now()-t0).toFixed(0);
         status.textContent = j.items.length+' result'+(j.items.length===1?'':'s')+
-          ' · '+ms+' ms'+(j.cache?' · cache '+j.cache:'')+' · backend '+j.backend;
+          ' · '+ms+' ms · backend '+j.backend;
         render(j.items);
         return;
       }
@@ -907,114 +782,4 @@ const HTML = `<!doctype html>
 })();
 </script>
 </body>
-</html>`;
-
-addEventListener('fetch', (e) => e.respondWith(handle(e.request)));
-
-async function handle(req) {
-  const url = new URL(req.url);
-  const path = url.pathname;
-
-  if (req.method === 'OPTIONS') {
-    return cors(new Response(null, { status: 204 }));
-  }
-
-  if (path === '/' && (req.method === 'GET' || req.method === 'HEAD')) {
-    return new Response(req.method === 'HEAD' ? null : HTML, {
-      headers: {
-        'content-type': 'text/html; charset=utf-8',
-        'content-security-policy': CSP,
-        'referrer-policy': 'strict-origin-when-cross-origin',
-        'x-content-type-options': 'nosniff',
-        'cache-control': 'public, max-age=300',
-      },
-    });
-  }
-
-  if (path === '/api' || path === '/info') {
-    return jsonResp(BANNER);
-  }
-
-  if (path === '/health') {
-    // Merge upstream /health so the UI knows which backends are live.
-    let upstream = null;
-    try {
-      const r = await fetch(HF + '/health', { cf: { cacheTtl: 30 } });
-      if (r.ok) upstream = await r.json();
-    } catch (_) {}
-    return jsonResp({
-      ok: true,
-      proxy: 'cloudflare-worker',
-      upstream_ok: upstream ? !!upstream.ok : false,
-      backends_available: upstream && upstream.backends_available
-        ? upstream.backends_available : ['stub'],
-      default_backend: upstream && upstream.default_backend
-        ? upstream.default_backend : 'stub',
-      weights_loaded: upstream ? !!upstream.weights_loaded : false,
-    });
-  }
-
-  if (PROXY.has(path) && (req.method === 'GET' || req.method === 'HEAD')) {
-    return await proxied(req, url, path);
-  }
-
-  return jsonResp({ error: 'not found' }, 404);
-}
-
-function jsonResp(obj, status = 200) {
-  return new Response(JSON.stringify(obj, null, 2), {
-    status,
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'access-control-allow-origin': '*',
-      'cache-control': 'no-store',
-    },
-  });
-}
-
-function cors(resp) {
-  resp.headers.set('access-control-allow-origin', '*');
-  resp.headers.set('access-control-allow-methods', 'GET, HEAD, OPTIONS');
-  resp.headers.set('access-control-allow-headers', 'content-type');
-  return resp;
-}
-
-async function proxied(req, url, path) {
-  const upstream = new URL(HF);
-  upstream.pathname = path;
-  upstream.search = url.search;
-
-  const isRank = path === '/rank';
-  const cacheKey = new Request(upstream.toString() + '#' + CACHE_VERSION, req);
-  const cache = caches.default;
-
-  if (isRank) {
-    const hit = await cache.match(cacheKey);
-    if (hit) {
-      const r = new Response(hit.body, hit);
-      r.headers.set('x-photon-route-cache', 'hit');
-      return cors(r);
-    }
-  }
-
-  const fetched = await fetch(upstream.toString(), {
-    method: req.method,
-    headers: { accept: req.headers.get('accept') || '*/*' },
-    cf: { cacheTtl: 0 },
-  });
-
-  if (!fetched.ok || fetched.status >= 500) {
-    const r = new Response(fetched.body, fetched);
-    r.headers.set('x-photon-route-cache', 'bypass');
-    return cors(r);
-  }
-
-  const body = await fetched.arrayBuffer();
-  const headers = new Headers(fetched.headers);
-  headers.delete('set-cookie');
-  if (isRank) headers.set('cache-control', 'public, s-maxage=86400, max-age=300');
-  const ok = new Response(body, { status: fetched.status, headers });
-  ok.headers.set('x-photon-route-cache', 'miss');
-  if (isRank) await cache.put(cacheKey, ok.clone());
-  return cors(ok);
-}
+</html>
