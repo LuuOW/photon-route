@@ -245,7 +245,7 @@ def train(args: argparse.Namespace) -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    rel_path  = ROOT / "eval" / "relevance.json"
+    rel_path  = Path(args.relevance) if args.relevance else ROOT / "eval" / "relevance.json"
     cids_path = ROOT / "eval" / "corpus_ids.json"
     man_path  = ROOT / "eval" / "manifest.json"
 
@@ -380,6 +380,8 @@ def train(args: argparse.Namespace) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=ROOT / "weights.npz")
+    ap.add_argument("--relevance", type=str, default=None,
+                    help="path to alternate relevance.json (e.g. for held-out splits)")
     ap.add_argument("--steps", type=int, default=100)
     ap.add_argument("--lr", type=float, default=5e-3)
     # D-scale logits: with D in [0, 50], temp=0.1 made -D/temp logits up to
