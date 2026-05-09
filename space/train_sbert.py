@@ -168,6 +168,35 @@ def gaussian_fidelity_eval(mu_a: np.ndarray, sg_a: np.ndarray,
     return max(0.0, min(1.0, val))
 
 
+# ── photon-number-distribution Bhattacharyya coefficient (A3-Simple) ──────
+# Loudon Ch 6.10 — direct detection projects a state onto Fock basis and
+# measures the photon-number distribution P(n_0, n_1, ...). A retrieval
+# metric grounded in what the detector actually sees, rather than the
+# Gaussian-state inner product. Closed-form computable from (μ, σ) for
+# Gaussian states via thewalrus.quantum.probabilities; non-differentiable
+# (numpy under the hood), eval-only — A3-Real would do this differentiably.
+_PHOTON_PROB_CACHE: dict[int, np.ndarray] = {}
+
+
+def photon_prob_eval(mu_a: np.ndarray, sg_a: np.ndarray,
+                      mu_b: np.ndarray, sg_b: np.ndarray, cutoff: int = 4) -> float:
+    """Bhattacharyya coefficient between two photon-number distributions:
+    BC(P, Q) = Σ √(p_i q_i).  ∈ [0, 1]; 1 = identical distributions.
+
+    Reuses the cutoff-sized P arrays via caching keyed by (id(mu), id(sg))
+    isn't viable across calls (μ, σ get re-allocated). Caller's responsibility
+    to dedup per-state; here we just compute fresh.
+    """
+    from thewalrus.quantum import probabilities
+    P_a = np.asarray(probabilities(mu_a, sg_a, cutoff=cutoff, hbar=HBAR), dtype=np.float64).real
+    P_b = np.asarray(probabilities(mu_b, sg_b, cutoff=cutoff, hbar=HBAR), dtype=np.float64).real
+    # Truncation can leave a tail — renormalize so distributions sum to 1.
+    P_a = np.clip(P_a, 0.0, None) / max(P_a.sum(), 1e-12)
+    P_b = np.clip(P_b, 0.0, None) / max(P_b.sum(), 1e-12)
+    bc = float(np.sum(np.sqrt(P_a) * np.sqrt(P_b)))
+    return max(0.0, min(1.0, bc))
+
+
 def recall_at_k(ranked_ids, relevant, k):
     if not relevant:
         return float("nan")
@@ -182,33 +211,71 @@ def ndcg_at_k(ranked_ids, relevant, k):
     return dcg / ideal if ideal > 0 else float("nan")
 
 
-def evaluate(model: SBERTPhoton, abstracts, ids, queries, ks=(1, 3, 5, 10)) -> dict:
+def evaluate(model: SBERTPhoton, abstracts, ids, queries, ks=(1, 3, 5, 10),
+             metrics=("gaussian", "photon_prob"), photon_cutoff: int = 4) -> dict:
+    """Evaluate retrieval under multiple metrics on the same trained encoder.
+
+    Returns a dict with one report per metric:
+      {"gaussian": {"per_query":[...], "aggregate":{...}}, "photon_prob": {...}}
+
+    A3-Simple test: do "gaussian" (BBP fidelity) and "photon_prob" (Loudon
+    Ch 6.10 direct-detection-grounded Bhattacharyya coefficient on the
+    photon-number distribution) give different rankings on the same encoder?
+    """
     model.eval()
+    # Encode all docs + queries once; convert to numpy float64 for thewalrus.
+    doc_np: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    q_np: list[tuple[dict, np.ndarray, np.ndarray]] = []
     with torch.no_grad():
-        doc_states = {a: model.state_from_text(t) for a, t in abstracts.items()}
-    rows = []
-    for q in queries:
-        with torch.no_grad():
-            mu_q, sg_q = model.state_from_text(q["query"])
-        scored = []
-        for a in ids:
-            mu_d, sg_d = doc_states[a]
-            f = gaussian_fidelity_eval(
-                mu_q.cpu().numpy().astype(np.float64), sg_q.cpu().numpy().astype(np.float64),
-                mu_d.cpu().numpy().astype(np.float64), sg_d.cpu().numpy().astype(np.float64),
+        for arxiv_id, doc_text in abstracts.items():
+            mu_d, sg_d = model.state_from_text(doc_text)
+            doc_np[arxiv_id] = (
+                mu_d.cpu().numpy().astype(np.float64),
+                sg_d.cpu().numpy().astype(np.float64),
             )
-            scored.append((f, a))
-        scored.sort(key=lambda x: -x[0])
-        ranked_ids = [a for _, a in scored]
-        rel = set(q["relevant_ids"])
-        row = {"query": q["query"], "ranked": ranked_ids[: max(ks)]}
-        for k in ks:
-            row[f"recall@{k}"] = recall_at_k(ranked_ids, rel, k)
-            row[f"ndcg@{k}"]   = ndcg_at_k(ranked_ids, rel, k)
-        rows.append(row)
-    aggregate = {f"recall@{k}": float(np.mean([r[f"recall@{k}"] for r in rows])) for k in ks}
-    aggregate.update({f"ndcg@{k}": float(np.mean([r[f"ndcg@{k}"] for r in rows])) for k in ks})
-    return {"per_query": rows, "aggregate": aggregate}
+        for q in queries:
+            mu_q, sg_q = model.state_from_text(q["query"])
+            q_np.append((
+                q,
+                mu_q.cpu().numpy().astype(np.float64),
+                sg_q.cpu().numpy().astype(np.float64),
+            ))
+
+    score_fn = {
+        "gaussian":    lambda mq, sq, md, sd: gaussian_fidelity_eval(mq, sq, md, sd),
+        "photon_prob": lambda mq, sq, md, sd: photon_prob_eval(mq, sq, md, sd, cutoff=photon_cutoff),
+    }
+
+    metric_rows: dict[str, list] = {m: [] for m in metrics}
+    for q, mu_q, sg_q in q_np:
+        for metric in metrics:
+            scored = []
+            for a in ids:
+                mu_d, sg_d = doc_np[a]
+                f = score_fn[metric](mu_q, sg_q, mu_d, sg_d)
+                scored.append((f, a))
+            scored.sort(key=lambda x: -x[0])
+            ranked_ids = [a for _, a in scored]
+            rel = set(q["relevant_ids"])
+            row = {"query": q["query"], "ranked": ranked_ids[: max(ks)]}
+            for k in ks:
+                row[f"recall@{k}"] = recall_at_k(ranked_ids, rel, k)
+                row[f"ndcg@{k}"]   = ndcg_at_k(ranked_ids, rel, k)
+            metric_rows[metric].append(row)
+
+    out = {}
+    for metric in metrics:
+        rows = metric_rows[metric]
+        agg = {f"recall@{k}": float(np.mean([r[f"recall@{k}"] for r in rows])) for k in ks}
+        agg.update({f"ndcg@{k}": float(np.mean([r[f"ndcg@{k}"] for r in rows])) for k in ks})
+        out[metric] = {"per_query": rows, "aggregate": agg}
+    return out
+
+
+# Old single-metric shape kept for callers that didn't migrate yet.
+def _evaluate_single(model: SBERTPhoton, abstracts, ids, queries, ks=(1, 3, 5, 10)) -> dict:
+    multi = evaluate(model, abstracts, ids, queries, ks=ks, metrics=("gaussian",))
+    return multi["gaussian"]
 
 
 def train(args):
@@ -290,13 +357,17 @@ def train(args):
     summary = {}
     for label, p in eval_paths:
         rels = json.loads(p.read_text("utf-8"))["queries"]
-        report = evaluate(model, abstracts, ids, rels)
-        print(f"\n=== {label.upper()} EVAL ({len(rels)} queries) ===")
-        for r in report["per_query"]:
-            cells = " ".join(f"{m}={r[m]:.3f}" for m in r if m.startswith(("recall", "ndcg")))
-            print(f"  {r['query'][:48]:<48s}  {cells}")
-        print("aggregate: " + " ".join(f"{m}={report['aggregate'][m]:.3f}" for m in report["aggregate"]))
-        summary[label] = report["aggregate"]
+        multi = evaluate(model, abstracts, ids, rels,
+                          metrics=("gaussian", "photon_prob"))
+        for metric, report in multi.items():
+            print(f"\n=== {label.upper()} EVAL — metric={metric} ({len(rels)} queries) ===")
+            for r in report["per_query"]:
+                cells = " ".join(f"{m}={r[m]:.3f}" for m in r if m.startswith(("recall", "ndcg")))
+                print(f"  {r['query'][:48]:<48s}  {cells}")
+            print("aggregate: " + " ".join(
+                f"{m}={report['aggregate'][m]:.3f}" for m in report["aggregate"]
+            ))
+            summary[f"{label}/{metric}"] = report["aggregate"]
     # Sentinel line for downstream parsers (run_sweep.py).
     print(f"\nSUMMARY_JSON={json.dumps(summary)}")
 

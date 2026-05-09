@@ -86,19 +86,18 @@ def run_one(seed: int, no_squeeze: bool, steps: int, relevance_path: Path,
         (l for l in out.splitlines() if l.startswith("SUMMARY_JSON=")), ""
     )
     summary = json.loads(summary_line.split("=", 1)[1]) if summary_line else {}
-    train_agg = summary.get("train", {})
-    test_agg  = summary.get("test", {})
-    return {
-        "seed": seed,
-        "no_squeeze": int(no_squeeze),
-        "train_ndcg10":  train_agg.get("ndcg@10", float("nan")),
-        "test_ndcg10":   test_agg.get("ndcg@10", float("nan")),
-        "train_recall10": train_agg.get("recall@10", float("nan")),
-        "test_recall10":  test_agg.get("recall@10", float("nan")),
-        "train_recall1":  train_agg.get("recall@1", float("nan")),
-        "test_recall1":   test_agg.get("recall@1", float("nan")),
-        "n_train_queries": len(json.loads(train_p.read_text())["queries"]) if False else 0,  # logged in summary
-    }
+
+    def g(key, metric_key):
+        return summary.get(f"{key}/{metric_key}", {})
+
+    row = {"seed": seed, "no_squeeze": int(no_squeeze)}
+    for split in ("train", "test"):
+        for metric in ("gaussian", "photon_prob"):
+            agg = g(split, metric)
+            for m in ("ndcg@10", "recall@10", "recall@1"):
+                short = m.replace("@", "").replace("recall", "r").replace("ndcg", "n")
+                row[f"{split}_{metric}_{short}"] = agg.get(m, float("nan"))
+    return row
 
 
 def main():
@@ -123,9 +122,8 @@ def main():
                 seed=seed, no_squeeze=no_squeeze, steps=args.steps,
                 relevance_path=args.relevance, n_test=args.n_test, log_dir=args.log_dir,
             )
-            print(f"  → train nDCG@10 = {row['train_ndcg10']:.3f}  "
-                  f"test nDCG@10 = {row['test_ndcg10']:.3f}  "
-                  f"test R@1 = {row['test_recall1']:.3f}")
+            print(f"  → gaussian:    train n10={row['train_gaussian_n10']:.3f}  test n10={row['test_gaussian_n10']:.3f}")
+            print(f"     photon_prob: train n10={row['train_photon_prob_n10']:.3f}  test n10={row['test_photon_prob_n10']:.3f}")
             results.append(row)
 
     # Write CSV
@@ -147,11 +145,10 @@ def main():
         rows = [r for r in results if r["no_squeeze"] == int(ns)]
         if not rows:
             continue
-        m_test, s_test = stat(rows, "test_ndcg10")
-        m_r1,   s_r1   = stat(rows, "test_recall1")
         label = "no-squeeze" if ns else "full"
-        print(f"  {label:>10}: test nDCG@10 = {m_test:.3f} ± {s_test:.3f}   "
-              f"test R@1 = {m_r1:.3f} ± {s_r1:.3f}   (n={len(rows)})")
+        for metric in ("gaussian", "photon_prob"):
+            m, s = stat(rows, f"test_{metric}_n10")
+            print(f"  {label:>10}/{metric:>11}: test nDCG@10 = {m:.3f} ± {s:.3f}   (n={len(rows)})")
 
 
 if __name__ == "__main__":
