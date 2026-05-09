@@ -105,23 +105,33 @@ class SBERTPhoton(nn.Module):
             emb = torch.stack([e for e in emb]) if isinstance(emb, list) else emb
             return emb.to(torch.float32).cpu()
 
+    def state_from_features(self, feat: Tensor) -> tuple[Tensor, Tensor]:
+        """Forward from a *precomputed* SBERT feature vector — used during
+        training when frozen-SBERT features are cached at start to avoid
+        re-running the transformer every step."""
+        out = self.proj(feat)
+        return self._gates_from_logits(out)
+
     def state_from_text(self, text: str) -> tuple[Tensor, Tensor]:
-        feat = self.encode_features([text])           # (1, 384)
-        out  = self.proj(feat)[0]                     # (4N,)
+        feat = self.encode_features([text])[0]        # (384,)
+        out  = self.proj(feat)                        # (4N,)
+        return self._gates_from_logits(out)
+
+    def _gates_from_logits(self, out: Tensor) -> tuple[Tensor, Tensor]:
         # Decompose: per-mode (αq, αp, raw_r, raw_phi).
         # tanh-bound squeezing magnitude to [0, max_sq]; phi free.
         per_mode = out.view(self.n, 4)
         alpha_q = self.dgate_prefactor * torch.tanh(per_mode[:, 0])
         alpha_p = self.dgate_prefactor * torch.tanh(per_mode[:, 1])
         if self.no_squeeze:
-            r     = torch.zeros(self.n, dtype=feat.dtype)
-            phi_s = torch.zeros(self.n, dtype=feat.dtype)
+            r     = torch.zeros(self.n, dtype=out.dtype)
+            phi_s = torch.zeros(self.n, dtype=out.dtype)
         else:
             r     = self.max_sq * torch.sigmoid(per_mode[:, 2])
             phi_s = (2 * math.pi) * torch.sigmoid(per_mode[:, 3])
 
-        mu = torch.zeros(2 * self.n, dtype=feat.dtype)
-        sigma = _eye2N(self.n, feat)
+        mu = torch.zeros(2 * self.n, dtype=out.dtype)
+        sigma = _eye2N(self.n, out)
         for k in range(self.n):
             if not self.no_squeeze:
                 S = squeezing_qqpp(self.n, k, r[k], phi_s[k])
@@ -221,6 +231,16 @@ def train(args):
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[sbert] trainable params = {n_trainable}  no_squeeze={args.no_squeeze}", flush=True)
 
+    # ── Cache frozen-SBERT features for every doc and every query ONCE.
+    # Without this we re-run the transformer for every (doc, step) pair —
+    # 20 docs × 200 steps = 4000 forward passes per training run, ~5 min
+    # of pure-inference waste on cloud CPU. Frozen features don't change.
+    print(f"[sbert] caching SBERT features for {len(abstracts)} docs + "
+          f"{len(train_relevance)} queries...", flush=True)
+    doc_feats = {a: model.encode_features([t])[0] for a, t in abstracts.items()}
+    query_feats = {q["query"]: model.encode_features([q["query"]])[0]
+                    for q in train_relevance}
+
     optim = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=args.lr, weight_decay=args.weight_decay,
@@ -231,12 +251,13 @@ def train(args):
     t0 = time.time()
     for step in range(1, args.steps + 1):
         optim.zero_grad()
-        # Encode all docs once per step (weights change every step).
-        doc_states = {a: model.state_from_text(t) for a, t in abstracts.items()}
+        # Re-run the trainable projection each step over CACHED features
+        # (instead of re-running SBERT). projection ∈ R^{384×4N}, cheap.
+        doc_states = {a: model.state_from_features(doc_feats[a]) for a in abstracts}
 
         loss_sum = torch.zeros((), dtype=torch.float32)
         for query_text, rel_set in queries:
-            mu_q, sg_q = model.state_from_text(query_text)
+            mu_q, sg_q = model.state_from_features(query_feats[query_text])
             pos_id = rng.choice(sorted(rel_set))
             mu_p, sg_p = doc_states[pos_id]
             negs = rng.choice(
