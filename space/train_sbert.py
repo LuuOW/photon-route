@@ -272,12 +272,6 @@ def evaluate(model: SBERTPhoton, abstracts, ids, queries, ks=(1, 3, 5, 10),
     return out
 
 
-# Old single-metric shape kept for callers that didn't migrate yet.
-def _evaluate_single(model: SBERTPhoton, abstracts, ids, queries, ks=(1, 3, 5, 10)) -> dict:
-    multi = evaluate(model, abstracts, ids, queries, ks=ks, metrics=("gaussian",))
-    return multi["gaussian"]
-
-
 def train(args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)

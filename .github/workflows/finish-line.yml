@@ -1,0 +1,85 @@
+name: photon-route finish-line (B1 + B2 + A3-Real)
+
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Sweep seeds for A3-Real (default: 1 2 3 4 5)"
+        required: false
+        default: "1 2 3 4 5"
+      steps:
+        description: "Training steps for A3-Real (default: 200)"
+        required: false
+        default: "200"
+
+permissions:
+  contents: read
+
+jobs:
+  finish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy thewalrus torch sentence-transformers
+
+      - name: B1 — g^(1) coherence-time sim
+        run: |
+          mkdir -p reports
+          PYTHONPATH=src:. python -m space.sim_b1_g1_coherence | tee reports/b1.txt
+
+      - name: B2 — g^(2) classifier sim
+        run: |
+          PYTHONPATH=src:. python -m space.sim_b2_g2_classifier | tee reports/b2.txt
+
+      - name: Expand relevance (title queries)
+        run: |
+          PYTHONPATH=src:. python -m eval.expand_titles
+
+      - name: A3-Real — Fock-basis non-Gaussian sweep
+        run: |
+          PYTHONPATH=src:. python -m space.run_sweep_fock \
+            --seeds ${{ github.event.inputs.seeds }} \
+            --steps ${{ github.event.inputs.steps }} \
+            --herald-ns 1 0 \
+            --out-csv sweep_fock_results.csv \
+            --log-dir sweep_fock_logs \
+            | tee reports/a3.txt
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: photon-finish-line
+          path: |
+            reports/
+            sweep_fock_results.csv
+            sweep_fock_logs/
+            eval/relevance_expanded.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Print summaries
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "B1 — g^(1) coherence sim"
+          echo "=========================================="
+          tail -25 reports/b1.txt || true
+          echo
+          echo "=========================================="
+          echo "B2 — g^(2) classifier sim"
+          echo "=========================================="
+          tail -25 reports/b2.txt || true
+          echo
+          echo "=========================================="
+          echo "A3-Real — Fock sweep CSV"
+          echo "=========================================="
+          cat sweep_fock_results.csv || true
