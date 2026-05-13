@@ -213,6 +213,7 @@
   </button>
   <div id="m-navmenu" class="m-nav-menu" role="menu">
     <a href="https://ask-meridian.uk/">Home</a>
+
     <details class="m-nav-group" open>
       <summary><span class="m-nav-section">Showcase</span></summary>
       <a href="https://meridian.ask-meridian.uk/helix/" class="m-nav-app">
@@ -227,7 +228,7 @@
         <span class="m-name"><span class="m-emoji">🔭</span>Vision Lab</span>
         <span class="m-tag">SmolVLM / Moondream in browser via WebGPU</span>
       </a>
-      <a href="https://photon.ask-meridian.uk" class="m-nav-app current">
+      <a href="https://photon.ask-meridian.uk" class="m-nav-app">
         <span class="m-name"><span class="m-emoji">⚛︎</span>Photon Router</span>
         <span class="m-tag">CV photonic retrieval · trained on HF Space</span>
       </a>
@@ -236,13 +237,72 @@
         <span class="m-tag">Vision Lab in VR · controllers, raycaster, orbit</span>
       </a>
     </details>
+
+    <details class="m-nav-group">
+      <summary><span class="m-nav-section">Resources</span></summary>
+      <a href="https://ask-meridian.uk/#products">Products</a>
+      <a href="https://ask-meridian.uk/blog/">Blog</a>
+      <a href="https://ask-meridian.uk/docs/">Docs</a>
+      <a href="https://ask-meridian.uk/#pricing">Pricing</a>
+    </details>
+
     <details class="m-nav-group">
       <summary><span class="m-nav-section">Source</span></summary>
       <a href="https://github.com/LuuOW/meridian-mcp">GitHub · meridian-mcp</a>
-      <a href="https://github.com/LuuOW/lens">GitHub · lens</a>
       <a href="https://github.com/LuuOW/photon-route">GitHub · photon-route</a>
     </details>
   </div>
+
+  <!-- Self-contained burger toggle + current-link marker. Same shape as
+       _nav.html's script but uses .m-* selectors. Idempotent via
+       data-wired so it survives any per-app re-bind. -->
+  <script>
+  (function () {
+    function setup() {
+      var btn  = document.querySelector('.m-burger')
+      var menu = document.getElementById('m-navmenu')
+      if (!btn || !menu) return
+      if (btn.dataset.wired) return
+      btn.dataset.wired = '1'
+
+      function toggle(open) {
+        var isOpen = open === undefined ? !menu.classList.contains('open') : open
+        menu.classList.toggle('open', isOpen)
+        btn.classList.toggle('open', isOpen)
+        btn.setAttribute('aria-expanded', String(isOpen))
+      }
+      btn.addEventListener('click', function () { toggle() })
+      menu.querySelectorAll('a').forEach(function (a) {
+        a.addEventListener('click', function () { toggle(false) })
+      })
+      document.addEventListener('click', function (e) {
+        if (!menu.classList.contains('open')) return
+        if (!menu.contains(e.target) && !btn.contains(e.target)) toggle(false)
+      })
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') toggle(false)
+      })
+
+      // Mark current — cross-host aware (host+path equality) so the link
+      // for the page you're actually on lights up even on subdomains.
+      var here = location.host + location.pathname.replace(/\/index\.html$/, '/')
+      menu.querySelectorAll('a').forEach(function (a) {
+        var href = a.getAttribute('href')
+        if (!href) return
+        try {
+          var u = new URL(href, location.href)
+          var target = u.host + u.pathname.replace(/\/index\.html$/, '/')
+          if (target === here) a.classList.add('current')
+        } catch (_) {}
+      })
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', setup, { once: true })
+    } else {
+      setup()
+    }
+  })()
+  </script>
 </nav>
 
 <script>
