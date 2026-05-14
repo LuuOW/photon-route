@@ -210,14 +210,14 @@
 </style>
 
 <nav class="nav" aria-label="Primary">
-  <a href="/" class="brand" style="view-transition-name: brand">◎ Meridian</a>
+  <a href="https://ask-meridian.uk/" class="brand" style="view-transition-name: brand">◎ Meridian</a>
 
   <button id="burgerBtn" class="burger" type="button" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="navMenu">
     <span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span>
   </button>
 
   <div id="navMenu" class="nav-menu" role="menu">
-    <a href="/">Home</a>
+    <a href="https://ask-meridian.uk/">Home</a>
 
     <details class="nav-group" open>
       <summary class="nav-section">Showcase</summary>
@@ -289,14 +289,16 @@
         if (e.key === 'Escape') toggle(false)
       })
 
-      var here = location.pathname.replace(/\/index\.html$/, '/') || '/'
+      // Cross-host aware: same protocol+host+path → current. Lets the
+      // highlight follow you whether you're on ask-meridian.uk,
+      // meridian.ask-meridian.uk, or photon.ask-meridian.uk.
+      var here = location.host + location.pathname.replace(/\/index\.html$/, '/')
       menu.querySelectorAll('a').forEach(function (a) {
         var href = a.getAttribute('href')
         if (!href) return
         try {
           var u = new URL(href, location.href)
-          if (u.host !== location.host) return
-          var target = u.pathname.replace(/\/index\.html$/, '/') || '/'
+          var target = u.host + u.pathname.replace(/\/index\.html$/, '/')
           if (target === here) a.classList.add('current')
         } catch (_) {}
       })
