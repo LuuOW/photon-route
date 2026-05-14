@@ -151,9 +151,12 @@
     z-index: 100; pointer-events: none;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
   .nav > * { pointer-events: auto; }
-  .brand { color: #e9eef7; font-weight: 600; letter-spacing: 0.04em;
-    text-decoration: none; font-size: 15px; }
-  .brand .brand-glyph { color: #ffa276; margin-right: 6px; }
+  /* Nav-scoped: the page body has its own <div class="brand"> gradient
+     for the page title — don't let nav .brand rules override it. */
+  .nav .brand { color: #e9eef7; font-weight: 600; letter-spacing: 0.04em;
+    text-decoration: none; font-size: 15px;
+    background: none; -webkit-text-fill-color: currentColor; }
+  .nav .brand .brand-glyph { color: #ffa276; margin-right: 6px; }
   .burger { width: 40px; height: 40px; padding: 0;
     background: rgba(167,139,250,0.05);
     border: 1px solid rgba(167,139,250,0.18);
