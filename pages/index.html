@@ -218,7 +218,7 @@
       <summary><span class="m-nav-section">Showcase</span></summary>
       <a href="https://meridian.ask-meridian.uk/helix/" class="m-nav-app">
         <span class="m-name"><span class="m-emoji">🧬</span>helix · proteins</span>
-        <span class="m-tag">Injury → top therapeutic protein candidates as star systems</span>
+        <span class="m-tag">Injury → top therapeutic protein candidates, each rendered as its own star system</span>
       </a>
       <a href="https://ask-meridian.uk/miniapp/" class="m-nav-app">
         <span class="m-name"><span class="m-emoji">🛰️</span>Try it · Task orbit</span>
@@ -240,7 +240,6 @@
 
     <details class="m-nav-group">
       <summary><span class="m-nav-section">Resources</span></summary>
-      <a href="https://ask-meridian.uk/#products">Products</a>
       <a href="https://ask-meridian.uk/blog/">Blog</a>
       <a href="https://ask-meridian.uk/docs/">Docs</a>
       <a href="https://ask-meridian.uk/#pricing">Pricing</a>
@@ -253,9 +252,7 @@
     </details>
   </div>
 
-  <!-- Self-contained burger toggle + current-link marker. Same shape as
-       _nav.html's script but uses .m-* selectors. Idempotent via
-       data-wired so it survives any per-app re-bind. -->
+  <!-- Self-contained burger + cross-host current-link marker. -->
   <script>
   (function () {
     function setup() {
@@ -283,8 +280,6 @@
         if (e.key === 'Escape') toggle(false)
       })
 
-      // Mark current — cross-host aware (host+path equality) so the link
-      // for the page you're actually on lights up even on subdomains.
       var here = location.host + location.pathname.replace(/\/index\.html$/, '/')
       menu.querySelectorAll('a').forEach(function (a) {
         var href = a.getAttribute('href')
